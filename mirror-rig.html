@@ -1,0 +1,1084 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>MIRROR RIG — 全身モーションキャプチャ・アバター</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg: #10131822;
+    --bg-solid: #10131a;
+    --panel: #171b23;
+    --panel-2: #1d222c;
+    --border: #262c38;
+    --text: #e7ebf1;
+    --text-dim: #8a93a5;
+    --accent: #39ff9d;
+    --accent-dim: rgba(57,255,157,0.14);
+    --accent-glow: rgba(57,255,157,0.35);
+    --warn: #ffb454;
+    --danger: #ff6161;
+    --radius: 10px;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ height:100%; margin:0; }
+  body{
+    background:
+      radial-gradient(1200px 600px at 20% -10%, #1a2130 0%, transparent 60%),
+      radial-gradient(900px 500px at 100% 110%, #131a1f 0%, transparent 55%),
+      var(--bg-solid);
+    color: var(--text);
+    font-family: 'Noto Sans JP', 'Inter', sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono{ font-family:'JetBrains Mono', monospace; letter-spacing:0.02em; }
+
+  #app{
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 18px 18px 28px;
+    min-height:100%;
+  }
+
+  header{
+    display:flex; align-items:center; justify-content:space-between;
+    gap:12px; flex-wrap:wrap;
+    padding: 10px 4px 18px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
+  }
+  .brand{ display:flex; align-items:center; gap:10px; }
+  .brand-mark{
+    width:30px; height:30px; border-radius:7px;
+    background: linear-gradient(135deg, var(--accent-dim), transparent);
+    border:1px solid var(--border);
+    display:flex; align-items:center; justify-content:center;
+    position:relative;
+  }
+  .brand-mark::before{
+    content:''; width:10px; height:10px; border-radius:2px;
+    background: var(--accent);
+    box-shadow: 0 0 12px var(--accent-glow);
+    transform: rotate(45deg);
+  }
+  .brand h1{
+    font-size: 16px; margin:0; letter-spacing:0.14em; font-weight:700;
+  }
+  .brand p{
+    margin:1px 0 0; font-size:11px; color:var(--text-dim); letter-spacing:0.03em;
+  }
+  .status-strip{
+    display:flex; align-items:center; gap:16px; font-size:11.5px; color:var(--text-dim);
+  }
+  .status-strip .pill{
+    display:flex; align-items:center; gap:6px;
+    padding:5px 10px; border:1px solid var(--border); border-radius:20px;
+    background: var(--panel);
+  }
+  .dot{ width:7px; height:7px; border-radius:50%; background:var(--text-dim); flex:none; }
+  .dot.live{ background:var(--accent); box-shadow:0 0 8px var(--accent-glow); animation: pulse 1.6s ease-in-out infinite; }
+  .dot.warn{ background:var(--warn); }
+  .dot.err{ background:var(--danger); }
+  @keyframes pulse{ 0%,100%{ opacity:1; } 50%{ opacity:0.45; } }
+  @media (prefers-reduced-motion: reduce){ .dot.live{ animation:none; } }
+
+  main{
+    display:grid;
+    grid-template-columns: 1fr 320px;
+    gap:16px;
+  }
+  @media (max-width: 860px){
+    main{ grid-template-columns: 1fr; }
+  }
+
+  .panel{
+    background: var(--panel);
+    border:1px solid var(--border);
+    border-radius: var(--radius);
+    overflow:hidden;
+  }
+
+  #viewport-wrap{
+    position:relative;
+    aspect-ratio: 4 / 3;
+    min-height: 380px;
+  }
+  #viewport{ position:absolute; inset:0; }
+  #viewport canvas{ display:block; width:100%; height:100%; cursor: grab; }
+  #viewport canvas:active{ cursor: grabbing; }
+
+  .viewport-hint{
+    position:absolute; left:12px; bottom:12px;
+    font-size:10.5px; color: var(--text-dim);
+    background: rgba(10,12,16,0.55);
+    border:1px solid var(--border);
+    padding:5px 9px; border-radius:6px;
+    pointer-events:none;
+  }
+  .viewport-title{
+    position:absolute; left:12px; top:12px;
+    font-size:10.5px; color: var(--text-dim);
+    display:flex; flex-direction:column; gap:2px;
+  }
+  .viewport-title b{ color:var(--text); font-size:11.5px; letter-spacing:0.06em; }
+
+  aside{ display:flex; flex-direction:column; gap:16px; }
+
+  .side-panel{ padding:14px; }
+  .side-panel h2{
+    font-size:11px; letter-spacing:0.1em; color:var(--text-dim);
+    margin:0 0 10px; font-weight:700; text-transform:uppercase;
+  }
+
+  #preview-wrap{ position:relative; border-radius:8px; overflow:hidden; background:#05070a; border:1px solid var(--border); }
+  #previewCanvas{ display:block; width:100%; height:auto; aspect-ratio: 4/3; }
+  .preview-readout{
+    display:flex; justify-content:space-between; margin-top:8px;
+    font-size:10.5px; color:var(--text-dim);
+  }
+  .preview-readout span b{ color:var(--accent); font-weight:600; }
+
+  .btn{
+    width:100%;
+    display:flex; align-items:center; justify-content:center; gap:8px;
+    padding:11px 14px; border-radius:8px; border:1px solid var(--border);
+    background: var(--panel-2); color:var(--text);
+    font-family:'JetBrains Mono', monospace; font-size:12.5px; letter-spacing:0.04em;
+    cursor:pointer; transition: border-color .15s ease, background .15s ease, transform .05s ease;
+  }
+  .btn:hover{ border-color:#3a4252; }
+  .btn:active{ transform: scale(0.99); }
+  .btn:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+  .btn.primary{ background: linear-gradient(180deg, #1c2b23, #16201b); border-color:#2a4636; color:#c9ffe4; }
+  .btn.primary:hover{ border-color: var(--accent); }
+  .btn.stop{ background: linear-gradient(180deg, #2b1c1c, #201616); border-color:#463030; color:#ffd8d8; }
+
+  .toggle-row{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:9px 2px; font-size:12.5px; color:var(--text);
+    border-top:1px solid var(--border);
+  }
+  .toggle-row:first-of-type{ border-top:none; }
+  .switch{ position:relative; width:36px; height:20px; flex:none; }
+  .switch input{ opacity:0; width:0; height:0; }
+  .slider{
+    position:absolute; inset:0; background:#2a303c; border-radius:20px; cursor:pointer;
+    transition: background .15s ease; border:1px solid var(--border);
+  }
+  .slider::before{
+    content:''; position:absolute; width:14px; height:14px; left:2px; top:2px;
+    background:#c7cdd8; border-radius:50%; transition: transform .15s ease, background .15s ease;
+  }
+  input:checked + .slider{ background: var(--accent-dim); border-color: var(--accent); }
+  input:checked + .slider::before{ transform: translateX(16px); background: var(--accent); }
+  input:focus-visible + .slider{ outline:2px solid var(--accent); outline-offset:2px; }
+
+  .visually-hidden{
+    position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+    overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0;
+  }
+  .visually-hidden:focus-visible + label{ outline:2px solid var(--accent); outline-offset:2px; }
+
+  .model-hint{ margin-top:7px; font-size:10px; color:var(--text-dim); line-height:1.6; }
+  #modelStatus{ margin-top:8px; font-size:11px; color:var(--text-dim); line-height:1.6; }
+
+  .bone-checklist{
+    margin-top:9px; display:flex; flex-direction:column; gap:1px;
+    font-size:10.5px; max-height:168px; overflow-y:auto;
+    border-top:1px solid var(--border); padding-top:6px;
+  }
+  .bone-checklist .row{ display:flex; justify-content:space-between; padding:3px 1px; }
+  .bone-checklist .ok{ color:var(--accent); }
+  .bone-checklist .bad{ color:var(--text-dim); }
+
+  .btn-row{ display:flex; gap:8px; margin-top:10px; }
+  .btn.half{ width:auto; flex:1; padding:9px 8px; font-size:11.5px; }
+  .btn:disabled{ opacity:0.4; cursor:not-allowed; }
+  .btn-disabled-look{ opacity:0.4; pointer-events:none; }
+
+  #log{
+    margin-top:14px; font-size:10.5px; color:var(--text-dim);
+    max-height:96px; overflow-y:auto;
+    border-top:1px solid var(--border); padding-top:8px;
+    display:flex; flex-direction:column; gap:3px;
+  }
+  #log div span.t{ color:#4a5164; margin-right:6px; }
+
+  code{
+    background: rgba(255,255,255,0.08); padding:1px 6px; border-radius:4px;
+    font-family:'JetBrains Mono', monospace; font-size:0.92em; color:#dfe6f0;
+  }
+
+  #error-banner{
+    display:none;
+    margin-bottom:14px; padding:11px 14px; border-radius:8px;
+    background: rgba(255,97,97,0.08); border:1px solid rgba(255,97,97,0.4);
+    color:#ffcfcf; font-size:12.5px; line-height:1.7;
+    white-space: pre-line;
+  }
+  #info-banner{
+    display:none;
+    margin-bottom:14px; padding:11px 14px; border-radius:8px;
+    background: rgba(255,180,84,0.08); border:1px solid rgba(255,180,84,0.4);
+    color:#ffe3b8; font-size:12.5px; line-height:1.8;
+  }
+
+  footer{
+    margin-top:18px; font-size:11px; color:var(--text-dim); text-align:center;
+    letter-spacing:0.02em;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <header>
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div>
+        <h1 class="mono">MIRROR RIG</h1>
+        <p>WEBCAM全身トラッキング → 3Dホログラム・アバター</p>
+      </div>
+    </div>
+    <div class="status-strip mono">
+      <div class="pill"><span class="dot" id="dotTrack"></span><span id="trackLabel">STANDBY</span></div>
+      <div class="pill">FPS <b id="fpsVal" style="color:var(--text)">--</b></div>
+      <div class="pill">CONF <b id="confVal" style="color:var(--text)">--</b></div>
+    </div>
+  </header>
+
+  <div id="error-banner"></div>
+
+  <main>
+    <div class="panel">
+      <div id="viewport-wrap">
+        <div id="viewport"></div>
+        <div class="viewport-title mono">
+          <b>3D AVATAR VIEW</b>
+          <span>33点ランドマークからリアルタイム骨格再構成</span>
+        </div>
+        <div class="viewport-hint mono">ドラッグ：回転 ／ ホイール：ズーム</div>
+      </div>
+    </div>
+
+    <aside>
+      <div class="panel side-panel">
+        <h2>カメラ / トラッキング</h2>
+        <div id="preview-wrap">
+          <video id="video" autoplay playsinline muted style="display:none"></video>
+          <canvas id="previewCanvas" width="320" height="240"></canvas>
+        </div>
+        <div class="preview-readout mono">
+          <span>POINTS <b id="pointsVal">0</b>/33</span>
+          <span>MODEL <b id="modelVal">LOADING</b></span>
+        </div>
+        <div style="margin-top:12px; display:flex; flex-direction:column; gap:8px;">
+          <button class="btn primary" id="startBtn">▶ トラッキング開始</button>
+        </div>
+      </div>
+
+      <div class="panel side-panel">
+        <h2>3Dモデル（ボーン割り当て）</h2>
+        <input type="file" id="modelFile" accept=".glb,.gltf,.vrm" class="visually-hidden">
+        <label class="btn" for="modelFile" id="modelFileLabel">📁 GLB / VRM を読み込む</label>
+        <div class="model-hint">Mixamo・VRoid等の人型リグ推奨（単一ファイルの.glb/.vrmのみ、Draco圧縮は非対応）</div>
+        <div id="modelStatus">未読み込み（プロシージャル表示中）</div>
+        <div id="boneChecklist" class="bone-checklist mono"></div>
+        <div class="btn-row">
+          <button class="btn half" id="revertBtn" disabled>プロシージャルに戻す</button>
+          <button class="btn half" id="removeModelBtn" disabled>モデルを外す</button>
+        </div>
+      </div>
+
+      <div class="panel side-panel">
+        <h2>表示設定</h2>
+        <div class="toggle-row">
+          <span>ミラー表示（鏡のように反転）</span>
+          <label class="switch"><input type="checkbox" id="mirrorToggle" checked><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+          <span>骨格オーバーレイ表示</span>
+          <label class="switch"><input type="checkbox" id="skeletonToggle" checked><span class="slider"></span></label>
+        </div>
+        <div class="toggle-row">
+          <span>アイドル時に自動回転</span>
+          <label class="switch"><input type="checkbox" id="autoRotateToggle" checked><span class="slider"></span></label>
+        </div>
+        <div id="log" class="mono"></div>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="mono">POSE: MediaPipe Pose (33 landmarks) &nbsp;•&nbsp; RENDER: Three.js &nbsp;•&nbsp; RIG: GLB/VRMボーンへの自動リターゲット対応 &nbsp;•&nbsp; 顔・指のトラッキングは未使用</footer>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>window.__mpLoaded = false; window.__gltfError = false;</script>
+<script src="https://cdn.jsdelivr.net/gh/mrdoob/three.js@r128/examples/js/loaders/GLTFLoader.js" onerror="window.__gltfError=true"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" onload="window.__mpLoaded=true" onerror="window.__mpError=true"></script>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---------------------------------------------------------------------
+  // UI helpers
+  // ---------------------------------------------------------------------
+  const $ = (id) => document.getElementById(id);
+  const logEl = $('log');
+  function log(msg){
+    const now = new Date();
+    const t = now.toLocaleTimeString('ja-JP', {hour12:false});
+    const row = document.createElement('div');
+    row.innerHTML = `<span class="t">${t}</span>${msg}`;
+    logEl.appendChild(row);
+    logEl.scrollTop = logEl.scrollHeight;
+    while (logEl.children.length > 40) logEl.removeChild(logEl.firstChild);
+  }
+  function showError(msg){
+    const banner = $('error-banner');
+    banner.style.display = 'block';
+    banner.textContent = msg;
+    log('⚠ ' + msg);
+  }
+  function setTrackDot(state){
+    const dot = $('dotTrack');
+    dot.className = 'dot ' + (state === 'live' ? 'live' : state === 'warn' ? 'warn' : state === 'err' ? 'err' : '');
+    $('trackLabel').textContent =
+      state === 'live' ? 'LIVE' : state === 'warn' ? 'NO PERSON' : state === 'err' ? 'ERROR' : 'STANDBY';
+  }
+
+  function showFileProtocolNotice(){
+    const filename = (location.pathname.split('/').pop() || 'mirror-rig.html');
+    showError(
+      'このページを「ファイルを直接開く」形式（file://）で表示しているため、ブラウザの仕様上カメラ（getUserMedia）を使用できません。\n' +
+      'http:// または https:// 経由で開き直す必要があります。\n\n' +
+      '① このファイルがあるフォルダでターミナルを開き、次のいずれかを実行:\n' +
+      '   python3 -m http.server 8000\n' +
+      '   または（Node.jsがあれば） npx serve .\n' +
+      '② ブラウザで http://localhost:8000/' + filename + ' を開き直す\n\n' +
+      '③ もしくは GitHub Pages や Netlify Drop 等の静的ホスティングにアップロードして開く'
+    );
+  }
+  function isFileProtocol(){ return location.protocol === 'file:'; }
+
+  const state = {
+    running: false,
+    mirror: true,
+    showSkeleton: true,
+    autoRotate: true,
+    mode: 'procedural', // 'procedural' (built-in hologram figure) | 'rigged' (loaded GLB/VRM skeleton)
+    smooth: {},
+    fps: { frames: 0, last: performance.now(), value: 0 },
+  };
+
+  $('mirrorToggle').addEventListener('change', e => state.mirror = e.target.checked);
+  $('skeletonToggle').addEventListener('change', e => state.showSkeleton = e.target.checked);
+  $('autoRotateToggle').addEventListener('change', e => state.autoRotate = e.target.checked);
+
+  // ---------------------------------------------------------------------
+  // THREE.JS SCENE — low-poly "hologram figure" reconstructed from pose data
+  // ---------------------------------------------------------------------
+  const ACCENT = 0x39ff9d;
+  const LIMB_COLOR = 0x1c2836;
+  let scene, camera, renderer, avatarRoot, viewportEl;
+  const segMeshes = {};
+  const jointMeshes = {};
+  let headMesh;
+
+  function makeLimbMaterial(){
+    return new THREE.MeshStandardMaterial({
+      color: LIMB_COLOR, roughness: 0.55, metalness: 0.25,
+      emissive: new THREE.Color(ACCENT).multiplyScalar(0.06),
+      flatShading: true,
+    });
+  }
+  function makeJointMaterial(){
+    return new THREE.MeshStandardMaterial({
+      color: 0x0c1a14, roughness: 0.3, metalness: 0.1,
+      emissive: new THREE.Color(ACCENT).multiplyScalar(0.9),
+      flatShading: true,
+    });
+  }
+
+  function addSegment(name, radiusTop, radiusBottom){
+    const geo = new THREE.CylinderGeometry(radiusTop, radiusBottom, 1, 8, 1);
+    geo.translate(0, -0.5, 0); // unit cylinder spans local Y in [-1, 0]
+    const mesh = new THREE.Mesh(geo, makeLimbMaterial());
+    const pivot = new THREE.Group();
+    pivot.add(mesh);
+    avatarRoot.add(pivot);
+    segMeshes[name] = { pivot, mesh };
+  }
+
+  function addJoint(name, radius){
+    const geo = new THREE.IcosahedronGeometry(radius, 0);
+    const mesh = new THREE.Mesh(geo, makeJointMaterial());
+    avatarRoot.add(mesh);
+    jointMeshes[name] = mesh;
+  }
+
+  const UP_NEG = new THREE.Vector3(0, -1, 0);
+
+  function updateSegment(name, pA, pB){
+    const s = segMeshes[name];
+    if (!s) return;
+    const dir = new THREE.Vector3().subVectors(pB, pA);
+    const len = Math.max(dir.length(), 0.001);
+    s.pivot.position.copy(pA);
+    s.pivot.quaternion.setFromUnitVectors(UP_NEG, dir.normalize());
+    s.mesh.scale.set(1, len, 1);
+  }
+
+  function positionJoint(name, p){
+    const m = jointMeshes[name];
+    if (m) m.position.copy(p);
+  }
+
+  function buildAvatar(){
+    avatarRoot = new THREE.Group();
+    scene.add(avatarRoot);
+
+    addSegment('upperArmL', 0.045, 0.055);
+    addSegment('foreArmL', 0.035, 0.045);
+    addSegment('upperArmR', 0.045, 0.055);
+    addSegment('foreArmR', 0.035, 0.045);
+    addSegment('upperLegL', 0.06, 0.075);
+    addSegment('lowerLegL', 0.05, 0.06);
+    addSegment('upperLegR', 0.06, 0.075);
+    addSegment('lowerLegR', 0.05, 0.06);
+    addSegment('torso', 0.1, 0.13);
+    addSegment('neck', 0.045, 0.05);
+
+    ['lsh','rsh','lel','rel','lwr','rwr'].forEach(k => addJoint(k, 0.05));
+    ['lhip','rhip','lkn','rkn'].forEach(k => addJoint(k, 0.065));
+    addJoint('lan', 0.05); addJoint('ran', 0.05);
+    addJoint('midHip', 0.07);
+    headMesh = new THREE.Mesh(new THREE.IcosahedronGeometry(0.115, 1), makeJointMaterial());
+    avatarRoot.add(headMesh);
+
+    applyDefaultPose();
+  }
+
+  function getDefaultPoints(){
+    const P = {
+      lsh:[0.18,1.42,0], rsh:[-0.18,1.42,0],
+      lel:[0.24,1.16,0.02], rel:[-0.24,1.16,0.02],
+      lwr:[0.27,0.90,0.03], rwr:[-0.27,0.90,0.03],
+      lhip:[0.11,0.92,0], rhip:[-0.11,0.92,0],
+      lkn:[0.11,0.50,0.02], rkn:[-0.11,0.50,0.02],
+      lan:[0.11,0.06,0], ran:[-0.11,0.06,0],
+      nose:[0,1.60,0.06],
+    };
+    const V = {}; for (const k in P) V[k] = new THREE.Vector3(...P[k]);
+    V.midSh = new THREE.Vector3().addVectors(V.lsh, V.rsh).multiplyScalar(0.5);
+    V.midHip = new THREE.Vector3().addVectors(V.lhip, V.rhip).multiplyScalar(0.5);
+    return V;
+  }
+  function applyDefaultPose(){
+    applyPointsToRig(getDefaultPoints());
+  }
+
+  function applyPointsToRig(P){
+    updateSegment('upperArmL', P.lsh, P.lel);
+    updateSegment('foreArmL', P.lel, P.lwr);
+    updateSegment('upperArmR', P.rsh, P.rel);
+    updateSegment('foreArmR', P.rel, P.rwr);
+    updateSegment('upperLegL', P.lhip, P.lkn);
+    updateSegment('lowerLegL', P.lkn, P.lan);
+    updateSegment('upperLegR', P.rhip, P.rkn);
+    updateSegment('lowerLegR', P.rkn, P.ran);
+    updateSegment('torso', P.midSh, P.midHip);
+    updateSegment('neck', P.midSh, P.nose);
+
+    ['lsh','rsh','lel','rel','lwr','rwr','lhip','rhip','lkn','rkn','lan','ran'].forEach(k => positionJoint(k, P[k]));
+    positionJoint('midHip', P.midHip);
+    headMesh.position.copy(P.nose).add(new THREE.Vector3(0, 0.05, 0));
+  }
+
+  // Camera orbit (simple drag + wheel, no external deps)
+  let camTheta = 0.15, camPhi = 1.25, camRadius = 3.2;
+  const camTarget = new THREE.Vector3(0, 0.9, 0);
+  function updateCameraPos(){
+    camera.position.set(
+      camTarget.x + camRadius * Math.sin(camPhi) * Math.sin(camTheta),
+      camTarget.y + camRadius * Math.cos(camPhi),
+      camTarget.z + camRadius * Math.sin(camPhi) * Math.cos(camTheta)
+    );
+    camera.lookAt(camTarget);
+  }
+  function setupCameraControls(dom){
+    let dragging = false, lastX = 0, lastY = 0, userDragged = false;
+    dom.addEventListener('pointerdown', e => { dragging = true; lastX = e.clientX; lastY = e.clientY; });
+    window.addEventListener('pointerup', () => dragging = false);
+    window.addEventListener('pointermove', e => {
+      if (!dragging) return;
+      userDragged = true;
+      const dx = e.clientX - lastX, dy = e.clientY - lastY;
+      lastX = e.clientX; lastY = e.clientY;
+      camTheta -= dx * 0.006;
+      camPhi = Math.min(Math.max(camPhi - dy * 0.006, 0.35), Math.PI - 0.35);
+      updateCameraPos();
+    });
+    dom.addEventListener('wheel', e => {
+      e.preventDefault();
+      camRadius = Math.min(Math.max(camRadius + e.deltaY * 0.0022, 1.6), 6);
+      updateCameraPos();
+    }, { passive: false });
+  }
+
+  function initThree(){
+    viewportEl = $('viewport');
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x10131a);
+    scene.fog = new THREE.Fog(0x10131a, 3.5, 11);
+
+    camera = new THREE.PerspectiveCamera(42, viewportEl.clientWidth / viewportEl.clientHeight, 0.1, 100);
+    updateCameraPos();
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(viewportEl.clientWidth, viewportEl.clientHeight);
+    viewportEl.appendChild(renderer.domElement);
+
+    scene.add(new THREE.HemisphereLight(0x4a5568, 0x0a0d10, 1.15));
+    const key = new THREE.DirectionalLight(0x9fd8ff, 0.75);
+    key.position.set(2.5, 4, 3);
+    scene.add(key);
+    const rim = new THREE.DirectionalLight(ACCENT, 0.4);
+    rim.position.set(-3, 1.5, -2.5);
+    scene.add(rim);
+
+    const grid = new THREE.GridHelper(6, 24, 0x2a3542, 0x1a2028);
+    scene.add(grid);
+    const floor = new THREE.Mesh(
+      new THREE.CircleGeometry(3, 6),
+      new THREE.MeshStandardMaterial({ color: 0x141a22, roughness: 1, metalness: 0, flatShading: true })
+    );
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.y = -0.002;
+    scene.add(floor);
+
+    buildAvatar();
+    setupCameraControls(renderer.domElement);
+
+    window.addEventListener('resize', () => {
+      camera.aspect = viewportEl.clientWidth / viewportEl.clientHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(viewportEl.clientWidth, viewportEl.clientHeight);
+    });
+
+    animate();
+  }
+
+  function animate(){
+    requestAnimationFrame(animate);
+    if (!state.running && state.autoRotate){
+      camTheta += 0.0016;
+      updateCameraPos();
+    }
+    renderer.render(scene, camera);
+  }
+
+  // ---------------------------------------------------------------------
+  // RIGGED MODEL — load an existing GLB/VRM humanoid and drive its real bones
+  //
+  // Method: for each driven bone we capture, once at load time, its REST
+  // direction toward a target child bone expressed in the PARENT's local
+  // space (i.e. "which way does this bone point when its own rotation is
+  // identity"). Every frame we take the same world-space limb vector used
+  // by the procedural avatar (shoulder->elbow, hip->knee, etc.), convert it
+  // into that same parent-local space, and set bone.quaternion to the swing
+  // rotation between rest-direction and target-direction. This is rig-
+  // agnostic (works for Mixamo, VRoid/VRM, Unity-Humanoid-style skeletons,
+  // any bind pose) because it never assumes a fixed axis convention.
+  // ---------------------------------------------------------------------
+  const DRIVEN_BONES = ['torso','neck','leftUpperArm','leftLowerArm','rightUpperArm','rightLowerArm','leftUpperLeg','leftLowerLeg','rightUpperLeg','rightLowerLeg'];
+  const BONE_LABELS = {
+    torso:'胴体（胸）', neck:'首', leftUpperArm:'左上腕', leftLowerArm:'左前腕',
+    rightUpperArm:'右上腕', rightLowerArm:'右前腕', leftUpperLeg:'左太もも',
+    leftLowerLeg:'左すね', rightUpperLeg:'右太もも', rightLowerLeg:'右すね',
+  };
+
+  let riggedRoot = null, riggedBones = null, riggedRestDirs = null, gltfLoader = null;
+
+  function normName(name){ return (name || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
+  function boneSide(name){
+    const lower = (name || '').toLowerCase();
+    if (lower.includes('left')) return 'left';
+    if (lower.includes('right')) return 'right';
+    const tokens = (name || '').split(/[^a-zA-Z0-9]+/).filter(Boolean);
+    if (tokens.some(t => t.toLowerCase() === 'l')) return 'left';
+    if (tokens.some(t => t.toLowerCase() === 'r')) return 'right';
+    return null;
+  }
+  function findBoneBySide(bones, side, include, exclude){
+    exclude = exclude || [];
+    return bones.find(b => {
+      if (boneSide(b.name) !== side) return false;
+      const n = normName(b.name);
+      return include.some(p => n.includes(p)) && !exclude.some(p => n.includes(p));
+    }) || null;
+  }
+  function findBoneCenter(bones, include, exclude){
+    exclude = exclude || [];
+    const strict = bones.find(b => !boneSide(b.name) && include.some(p => normName(b.name).includes(p)) && !exclude.some(p => normName(b.name).includes(p)));
+    if (strict) return strict;
+    return bones.find(b => include.some(p => normName(b.name).includes(p)) && !exclude.some(p => normName(b.name).includes(p))) || null;
+  }
+  function firstBoneChild(b){ return (b && b.children.find(c => c.isBone)) || null; }
+
+  function detectHumanoidBones(root){
+    const bones = [];
+    root.traverse(o => { if (o.isBone) bones.push(o); });
+
+    const headB = findBoneCenter(bones, ['head']);
+    const neckB = findBoneCenter(bones, ['neck']);
+    const hipsB = findBoneCenter(bones, ['hips', 'pelvis']) || findBoneCenter(bones, ['hip']);
+
+    const lHand = findBoneBySide(bones, 'left', ['hand']);
+    const rHand = findBoneBySide(bones, 'right', ['hand']);
+    const lLowerArm = findBoneBySide(bones, 'left', ['forearm', 'lowerarm']);
+    const rLowerArm = findBoneBySide(bones, 'right', ['forearm', 'lowerarm']);
+    const lUpperArm = findBoneBySide(bones, 'left', ['upperarm', 'arm'], ['forearm', 'lowerarm']);
+    const rUpperArm = findBoneBySide(bones, 'right', ['upperarm', 'arm'], ['forearm', 'lowerarm']);
+
+    const lFoot = findBoneBySide(bones, 'left', ['foot']);
+    const rFoot = findBoneBySide(bones, 'right', ['foot']);
+    const lLowerLeg = findBoneBySide(bones, 'left', ['lowerleg', 'shin', 'calf']) || findBoneBySide(bones, 'left', ['leg'], ['upleg', 'upperleg', 'thigh']);
+    const rLowerLeg = findBoneBySide(bones, 'right', ['lowerleg', 'shin', 'calf']) || findBoneBySide(bones, 'right', ['leg'], ['upleg', 'upperleg', 'thigh']);
+    const lUpperLeg = findBoneBySide(bones, 'left', ['upperleg', 'upleg', 'thigh']);
+    const rUpperLeg = findBoneBySide(bones, 'right', ['upperleg', 'upleg', 'thigh']);
+
+    const torsoBone = (neckB && neckB.parent && neckB.parent.isBone) ? neckB.parent
+                     : (headB && headB.parent && headB.parent.isBone) ? headB.parent : null;
+
+    const map = {
+      torso: torsoBone, neck: neckB,
+      leftUpperArm: lUpperArm, leftLowerArm: lLowerArm,
+      rightUpperArm: rUpperArm, rightLowerArm: rLowerArm,
+      leftUpperLeg: lUpperLeg, leftLowerLeg: lLowerLeg,
+      rightUpperLeg: rUpperLeg, rightLowerLeg: rLowerLeg,
+    };
+    const targetChild = {
+      torso: neckB || firstBoneChild(torsoBone),
+      neck: headB || firstBoneChild(neckB),
+      leftUpperArm: lLowerArm || firstBoneChild(lUpperArm),
+      leftLowerArm: lHand || firstBoneChild(lLowerArm),
+      rightUpperArm: rLowerArm || firstBoneChild(rUpperArm),
+      rightLowerArm: rHand || firstBoneChild(rLowerArm),
+      leftUpperLeg: lLowerLeg || firstBoneChild(lUpperLeg),
+      leftLowerLeg: lFoot || firstBoneChild(lLowerLeg),
+      rightUpperLeg: rLowerLeg || firstBoneChild(rUpperLeg),
+      rightLowerLeg: rFoot || firstBoneChild(rLowerLeg),
+    };
+    return { map, targetChild, hipsB, headB, boneCount: bones.length };
+  }
+
+  function computeRestDir(bone, child){
+    if (!bone || !child || !bone.parent) return null;
+    const boneWP = new THREE.Vector3(); bone.getWorldPosition(boneWP);
+    const childWP = new THREE.Vector3(); child.getWorldPosition(childWP);
+    const parentWQ = new THREE.Quaternion(); bone.parent.getWorldQuaternion(parentWQ);
+    const dir = childWP.sub(boneWP);
+    if (dir.lengthSq() < 1e-10) return null;
+    dir.applyQuaternion(parentWQ.invert());
+    return dir.normalize();
+  }
+
+  function setBoneSwing(bone, restDir, worldDir){
+    if (!bone || !restDir || worldDir.lengthSq() < 1e-10) return;
+    const parentWQ = new THREE.Quaternion();
+    bone.parent.getWorldQuaternion(parentWQ);
+    const localTarget = worldDir.clone().normalize().applyQuaternion(parentWQ.invert()).normalize();
+    bone.quaternion.setFromUnitVectors(restDir, localTarget);
+    bone.updateMatrixWorld(true);
+  }
+
+  function applyPointsToRiggedModel(P){
+    if (!riggedBones) return;
+    const dirs = {
+      torso: new THREE.Vector3().subVectors(P.midSh, P.midHip),
+      neck: new THREE.Vector3().subVectors(P.nose, P.midSh),
+      leftUpperArm: new THREE.Vector3().subVectors(P.lel, P.lsh),
+      leftLowerArm: new THREE.Vector3().subVectors(P.lwr, P.lel),
+      rightUpperArm: new THREE.Vector3().subVectors(P.rel, P.rsh),
+      rightLowerArm: new THREE.Vector3().subVectors(P.rwr, P.rel),
+      leftUpperLeg: new THREE.Vector3().subVectors(P.lkn, P.lhip),
+      leftLowerLeg: new THREE.Vector3().subVectors(P.lan, P.lkn),
+      rightUpperLeg: new THREE.Vector3().subVectors(P.rkn, P.rhip),
+      rightLowerLeg: new THREE.Vector3().subVectors(P.ran, P.rkn),
+    };
+    // Parent-before-child order so each bone's updateMatrixWorld() has already
+    // cascaded down from its ancestors before we read/depend on it.
+    DRIVEN_BONES.forEach(name => {
+      const bone = riggedBones.map[name];
+      const restDir = riggedRestDirs[name];
+      if (bone && restDir) setBoneSwing(bone, restDir, dirs[name]);
+    });
+  }
+
+  function disposeObject3D(obj){
+    obj.traverse(o => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material){
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        mats.forEach(m => {
+          Object.keys(m).forEach(k => { const v = m[k]; if (v && v.isTexture) v.dispose(); });
+          m.dispose();
+        });
+      }
+    });
+  }
+
+  function fitAndPlaceModel(root){
+    const box = new THREE.Box3().setFromObject(root);
+    const size = new THREE.Vector3(); box.getSize(size);
+    const scale = size.y > 1e-6 ? 1.7 / size.y : 1;
+    root.scale.setScalar(scale);
+    root.updateMatrixWorld(true);
+    const box2 = new THREE.Box3().setFromObject(root);
+    const center2 = new THREE.Vector3(); box2.getCenter(center2);
+    root.position.x -= center2.x;
+    root.position.z -= center2.z;
+    root.position.y -= box2.min.y;
+    root.updateMatrixWorld(true);
+  }
+
+  function updateBoneChecklist(){
+    const el = $('boneChecklist');
+    el.innerHTML = '';
+    DRIVEN_BONES.forEach(name => {
+      const ok = !!(riggedBones && riggedBones.map[name] && riggedRestDirs[name]);
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.innerHTML = `<span>${BONE_LABELS[name]}</span><span class="${ok ? 'ok' : 'bad'}">${ok ? '✓ 検出' : '— 未検出'}</span>`;
+      el.appendChild(row);
+    });
+  }
+
+  function loadModelFile(file){
+    if (typeof THREE.GLTFLoader === 'undefined'){
+      showError('モデル読み込みライブラリ（GLTFLoader）が読み込まれていません。ネットワーク接続をご確認のうえ、ページを再読み込みしてください。');
+      return;
+    }
+    const statusEl = $('modelStatus');
+    statusEl.textContent = '読み込み中…';
+    $('modelFile').disabled = true;
+
+    const reader = new FileReader();
+    reader.onerror = () => {
+      statusEl.textContent = 'ファイルの読み込みに失敗しました。';
+      $('modelFile').disabled = false;
+    };
+    reader.onload = () => {
+      if (!gltfLoader) gltfLoader = new THREE.GLTFLoader();
+      gltfLoader.parse(reader.result, '', (gltf) => {
+        try{
+          const bones = [];
+          gltf.scene.traverse(o => { if (o.isBone) bones.push(o); });
+          if (bones.length === 0){
+            statusEl.textContent = 'このファイルにはボーン（骨格）が見つかりませんでした。リグ付きの人型モデルを読み込んでください。';
+            $('modelFile').disabled = false;
+            log('⚠ ボーンが見つかりません: ' + file.name);
+            return;
+          }
+
+          if (riggedRoot){ scene.remove(riggedRoot); disposeObject3D(riggedRoot); }
+          riggedRoot = gltf.scene;
+          scene.add(riggedRoot);
+          fitAndPlaceModel(riggedRoot);
+
+          const detection = detectHumanoidBones(riggedRoot);
+          riggedBones = detection;
+          riggedRestDirs = {};
+          DRIVEN_BONES.forEach(name => {
+            riggedRestDirs[name] = computeRestDir(detection.map[name], detection.targetChild[name]);
+          });
+          const foundCount = DRIVEN_BONES.filter(n => detection.map[n] && riggedRestDirs[n]).length;
+          updateBoneChecklist();
+          applyPointsToRiggedModel(getDefaultPoints());
+
+          state.mode = 'rigged';
+          avatarRoot.visible = false;
+          riggedRoot.visible = true;
+
+          statusEl.textContent = `読み込み完了：${file.name}（全${bones.length}ボーン中 ${foundCount}/${DRIVEN_BONES.length}部位を自動検出）`;
+          log(`3Dモデルを読み込みました: ${file.name}（${foundCount}/${DRIVEN_BONES.length}部位を自動検出）`);
+          setRevertButtonLabel();
+          $('removeModelBtn').disabled = false;
+          $('modelFile').disabled = false;
+
+          if (foundCount < 4){
+            showError('骨格の自動検出に成功した部位が少ないようです。Hips/Spine/Neck/Head、LeftUpperArm(または LeftArm)/LeftForeArm/LeftHand、LeftUpLeg(または LeftUpperLeg)/LeftLeg(または LeftLowerLeg)/LeftFoot のような標準的な人型ボーン名（Mixamo・VRoid等）のモデルでお試しください。');
+          }
+        } catch (e){
+          console.error(e);
+          statusEl.textContent = 'モデルの解析中にエラーが発生しました。';
+          $('modelFile').disabled = false;
+          log('⚠ モデル解析エラー: ' + e.message);
+        }
+      }, (err) => {
+        console.error(err);
+        statusEl.textContent = 'モデルの読み込みに失敗しました（Draco圧縮など非対応の形式の可能性があります）。';
+        $('modelFile').disabled = false;
+        log('⚠ GLTF読み込みエラー: ' + (err && err.message ? err.message : String(err)));
+      });
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  function setRevertButtonLabel(){
+    const btn = $('revertBtn');
+    if (!riggedRoot){ btn.textContent = 'プロシージャルに戻す'; btn.disabled = true; return; }
+    btn.disabled = false;
+    btn.textContent = (state.mode === 'rigged') ? 'プロシージャルに戻す' : 'モデル表示に切り替え';
+  }
+
+  function toggleAvatarMode(){
+    if (!riggedRoot) return;
+    if (state.mode === 'rigged'){
+      state.mode = 'procedural';
+      avatarRoot.visible = true;
+      riggedRoot.visible = false;
+      log('プロシージャル表示に戻しました');
+    } else {
+      state.mode = 'rigged';
+      avatarRoot.visible = false;
+      riggedRoot.visible = true;
+      log('モデル表示に切り替えました');
+    }
+    setRevertButtonLabel();
+  }
+
+  function removeModel(){
+    if (riggedRoot){ scene.remove(riggedRoot); disposeObject3D(riggedRoot); riggedRoot = null; }
+    riggedBones = null; riggedRestDirs = null;
+    state.mode = 'procedural';
+    avatarRoot.visible = true;
+    $('modelStatus').textContent = '未読み込み（プロシージャル表示中）';
+    $('boneChecklist').innerHTML = '';
+    $('removeModelBtn').disabled = true;
+    setRevertButtonLabel();
+    log('モデルを外しました');
+  }
+
+  // ---------------------------------------------------------------------
+  // MEDIAPIPE POSE — webcam capture + landmark detection
+  // ---------------------------------------------------------------------
+  const IDX = { nose:0, lsh:11, rsh:12, lel:13, rel:14, lwr:15, rwr:16, lhip:23, rhip:24, lkn:25, rkn:26, lan:27, ran:28 };
+  const CONNECTIONS = [[11,13],[13,15],[12,14],[14,16],[11,12],[23,24],[11,23],[12,24],[23,25],[25,27],[24,26],[26,28],[0,11],[0,12]];
+
+  const SCALE = 1.0;
+  const ROOT_Y = 0.93;
+  const SMOOTH_ALPHA = 0.5;
+
+  function toWorld(lm){
+    const mirrorSign = state.mirror ? -1 : 1;
+    return new THREE.Vector3(mirrorSign * lm.x * SCALE, -lm.y * SCALE + ROOT_Y, -lm.z * SCALE);
+  }
+  function smoothPoint(key, target){
+    const prev = state.smooth[key];
+    if (!prev){ state.smooth[key] = target.clone(); return state.smooth[key]; }
+    prev.lerp(target, SMOOTH_ALPHA);
+    return prev;
+  }
+
+  let video, previewCanvas, pctx, pose;
+
+  function tickFps(){
+    const c = state.fps;
+    c.frames++;
+    const now = performance.now();
+    if (now - c.last >= 1000){
+      c.value = c.frames; c.frames = 0; c.last = now;
+      $('fpsVal').textContent = c.value;
+    }
+  }
+
+  function drawOverlay(results){
+    const w = previewCanvas.width, h = previewCanvas.height;
+    pctx.save();
+    pctx.clearRect(0, 0, w, h);
+    if (state.mirror){ pctx.translate(w, 0); pctx.scale(-1, 1); }
+    if (video.readyState >= 2) pctx.drawImage(video, 0, 0, w, h);
+
+    if (state.showSkeleton && results.poseLandmarks){
+      pctx.strokeStyle = 'rgba(57,255,157,0.9)';
+      pctx.lineWidth = 2;
+      CONNECTIONS.forEach(([a, b]) => {
+        const pa = results.poseLandmarks[a], pb = results.poseLandmarks[b];
+        if (!pa || !pb) return;
+        pctx.beginPath();
+        pctx.moveTo(pa.x * w, pa.y * h);
+        pctx.lineTo(pb.x * w, pb.y * h);
+        pctx.stroke();
+      });
+      pctx.fillStyle = '#39ff9d';
+      Object.values(IDX).forEach(i => {
+        const p = results.poseLandmarks[i];
+        if (!p) return;
+        pctx.beginPath();
+        pctx.arc(p.x * w, p.y * h, 3.2, 0, Math.PI * 2);
+        pctx.fill();
+      });
+    }
+    pctx.restore();
+  }
+
+  function onResults(results){
+    tickFps();
+    drawOverlay(results);
+
+    if (!results.poseWorldLandmarks || !results.poseLandmarks){
+      setTrackDot('warn');
+      $('pointsVal').textContent = '0';
+      $('confVal').textContent = '--';
+      return;
+    }
+    setTrackDot('live');
+
+    const lm = results.poseWorldLandmarks;
+    const vis = results.poseLandmarks;
+    let visSum = 0, visN = 0, detected = 0;
+    Object.values(IDX).forEach(i => {
+      if (vis[i] && typeof vis[i].visibility === 'number'){ visSum += vis[i].visibility; visN++; }
+      if (vis[i] && (vis[i].visibility === undefined || vis[i].visibility > 0.4)) detected++;
+    });
+    $('confVal').textContent = visN ? (visSum / visN).toFixed(2) : '--';
+    $('pointsVal').textContent = String(detected);
+
+    const P = {};
+    for (const k in IDX) P[k] = smoothPoint(k, toWorld(lm[IDX[k]]));
+    P.midSh = new THREE.Vector3().addVectors(P.lsh, P.rsh).multiplyScalar(0.5);
+    P.midHip = new THREE.Vector3().addVectors(P.lhip, P.rhip).multiplyScalar(0.5);
+
+    if (state.mode === 'rigged' && riggedBones){
+      applyPointsToRiggedModel(P);
+    } else {
+      applyPointsToRig(P);
+    }
+  }
+
+  async function initPose(){
+    if (window.__mpError || typeof Pose === 'undefined'){
+      throw new Error('MediaPipe Pose の読み込みに失敗しました。');
+    }
+    pose = new Pose({ locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${f}` });
+    pose.setOptions({
+      modelComplexity: 1,
+      smoothLandmarks: true,
+      enableSegmentation: false,
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.6,
+    });
+    pose.onResults(onResults);
+    log('トラッキングモデルを初期化しました');
+    $('modelVal').textContent = 'READY';
+  }
+
+  async function detectLoop(){
+    if (!state.running) return;
+    if (video.readyState >= 2){
+      try { await pose.send({ image: video }); }
+      catch (e){ console.error(e); }
+    }
+    requestAnimationFrame(detectLoop);
+  }
+
+  let stream = null;
+  async function startCamera(){
+    if (isFileProtocol()){
+      showFileProtocolNotice();
+      return;
+    }
+    const btn = $('startBtn');
+    btn.disabled = true;
+    try{
+      if (!pose){ await initPose(); }
+      stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: 'user' }, audio: false });
+      video.srcObject = stream;
+      await video.play();
+      state.running = true;
+      log('カメラを起動しました。トラッキングを開始します');
+      btn.textContent = '■ トラッキング停止';
+      btn.classList.remove('primary'); btn.classList.add('stop');
+      btn.disabled = false;
+      btn.onclick = stopCamera;
+      detectLoop();
+    } catch (err){
+      btn.disabled = false;
+      if (err && err.name === 'NotAllowedError'){
+        showError('カメラへのアクセスが許可されませんでした。ブラウザのアドレスバー付近のカメラ権限設定から許可してください。');
+      } else if (err && err.message && err.message.includes('MediaPipe')){
+        showError('モーション検出ライブラリの読み込みに失敗しました。ネットワーク接続、または広告ブロッカー等の拡張機能の設定をご確認のうえ、ページを再読み込みしてください。');
+      } else {
+        showError('カメラの起動に失敗しました：' + (err && err.message ? err.message : String(err)));
+      }
+      setTrackDot('err');
+    }
+  }
+
+  function stopCamera(){
+    state.running = false;
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    setTrackDot('idle');
+    $('fpsVal').textContent = '--';
+    $('confVal').textContent = '--';
+    $('pointsVal').textContent = '0';
+    log('トラッキングを停止しました');
+    const btn = $('startBtn');
+    btn.textContent = '▶ トラッキング開始';
+    btn.classList.remove('stop'); btn.classList.add('primary');
+    btn.onclick = startCamera;
+  }
+
+  // ---------------------------------------------------------------------
+  // BOOT
+  // ---------------------------------------------------------------------
+  window.addEventListener('DOMContentLoaded', () => {
+    video = $('video');
+    previewCanvas = $('previewCanvas');
+    pctx = previewCanvas.getContext('2d');
+    $('startBtn').onclick = startCamera;
+
+    $('modelFile').addEventListener('change', (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (f) loadModelFile(f);
+    });
+    $('revertBtn').addEventListener('click', toggleAvatarMode);
+    $('removeModelBtn').addEventListener('click', removeModel);
+
+    if (isFileProtocol()){
+      showFileProtocolNotice();
+    }
+
+    if (typeof THREE === 'undefined'){
+      showError('3D描画ライブラリ（Three.js）の読み込みに失敗しました。ネットワーク接続をご確認のうえ、ページを再読み込みしてください。');
+      return;
+    }
+    initThree();
+    log('3Dビューポートを初期化しました');
+
+    setTimeout(() => {
+      if (window.__mpError || typeof Pose === 'undefined'){
+        showError('モーション検出ライブラリ（MediaPipe Pose）の読み込みに失敗しました。ネットワーク接続、または広告ブロッカー等の拡張機能の設定をご確認のうえ、ページを再読み込みしてください。');
+        $('modelVal').textContent = 'ERROR';
+      }
+      if (window.__gltfError || typeof THREE.GLTFLoader === 'undefined'){
+        $('modelFileLabel').classList.add('btn-disabled-look');
+        $('modelStatus').textContent = 'モデル読み込みライブラリの取得に失敗したため、この機能は現在利用できません（プロシージャル表示のみ）';
+        log('⚠ GLTFLoader の読み込みに失敗しました。3Dモデル読み込み機能は無効です');
+      }
+    }, 6000);
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      showError('お使いのブラウザはカメラ機能（getUserMedia）に対応していません。');
+    }
+  });
+})();
+</script>
+</body>
+</html>
