@@ -474,6 +474,24 @@
       s.addEventListener('change', () => { cfg.behavior[k] = s.value; });
     });
 
+    // 判定の感度と、その場で語を試す欄
+    const LABEL_JA = { negative: 'ネガティブ', positive: 'ポジティブ', neutral: '中立' };
+    const runProbe = () => {
+      const w = el('probe').value.trim();
+      const out = el('probeOut');
+      if (!w) { out.textContent = '—'; out.className = 'note'; return; }
+      const label = window.Sentiment.classify(w);
+      out.textContent = w + ' → ' + LABEL_JA[label];
+      out.className = 'note ' + label;
+    };
+    el('sensitivity').value = window.Sentiment.sensitivity;
+    el('sensitivity').addEventListener('change', e => {
+      window.Sentiment.setSensitivity(e.target.value);
+      runProbe();
+      setStatus('判定の感度: ' + e.target.options[e.target.selectedIndex].text, 'info');
+    });
+    el('probe').addEventListener('input', runProbe);
+
     el('fontFamily').addEventListener('change', applyFont);
     el('fontCustom').addEventListener('input', applyFont);
     el('fontWeight').addEventListener('change', applyFont);

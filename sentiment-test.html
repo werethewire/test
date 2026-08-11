@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>極性判定の精度テスト — Word Rain</title>
+<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="%2307080c"/><rect x="4" y="14" width="24" height="4" rx="2" fill="%234ee6a8"/><rect x="4" y="21" width="14" height="4" rx="2" fill="%23ff4d6d"/></svg>'>
+<style>
+  :root { --bg:#0b0d13; --panel:#141824; --line:#262b3a; --text:#dfe4ee; --muted:#8a93a6;
+          --pos:#4ee6a8; --neg:#ff4d6d; --neu:#8a93a6; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:24px; background:var(--bg); color:var(--text);
+         font:14px/1.6 "Noto Sans JP","Yu Gothic UI",Meiryo,system-ui,sans-serif; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  p.lead { color:var(--muted); font-size:12.5px; margin:0 0 20px; }
+  .wrap { max-width:1000px; margin:0 auto; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:12px; margin-bottom:14px; }
+  .box { background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:10px 12px; }
+  .box h2 { font-size:12px; margin:0 0 6px; color:var(--muted); font-weight:600; letter-spacing:.04em; }
+  textarea { width:100%; min-height:130px; background:#0c0f18; color:var(--text);
+             border:1px solid var(--line); border-radius:6px; padding:8px; font:inherit; font-size:12px; resize:vertical; }
+  .controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:18px; }
+  select, button { background:#1a2032; color:var(--text); border:1px solid var(--line);
+                   border-radius:7px; padding:8px 12px; font:inherit; font-size:13px; }
+  button { cursor:pointer; }
+  button.primary { background:#24406e; border-color:#37598f; }
+  table { width:100%; border-collapse:collapse; margin-bottom:20px; font-size:13px; }
+  th, td { text-align:right; padding:8px 10px; border-bottom:1px solid var(--line); }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--muted); font-weight:600; font-size:11.5px; }
+  td.num { font-variant-numeric:tabular-nums; }
+  .good { color:var(--pos); } .bad { color:var(--neg); } .mid { color:#ffc861; }
+  .misses { background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:12px 14px; margin-bottom:14px; }
+  .misses h2 { font-size:12px; margin:0 0 8px; color:var(--muted); }
+  .chip { display:inline-block; background:#0c0f18; border:1px solid var(--line); border-radius:5px;
+          padding:2px 7px; margin:2px 3px 2px 0; font-size:12px; }
+  .chip b { font-weight:600; }
+  .neg b { color:var(--neg); } .pos b { color:var(--pos); } .neu b { color:var(--neu); }
+  code { background:#0c0f18; padding:1px 5px; border-radius:4px; font-size:12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>極性判定の精度テスト</h1>
+  <p class="lead">
+    ラベル付きの語で <code>sentiment.js</code> を評価します。語を書き換えれば自分の用途で測れます。
+    取りこぼしが多い語を <code>sentiment.js</code> の <code>NEG_WORDS</code> / <code>POS_WORDS</code> に足して、また実行してください。
+  </p>
+
+  <div class="grid">
+    <div class="box">
+      <h2>ネガティブ（正解ラベル）</h2>
+      <textarea id="setNeg"></textarea>
+    </div>
+    <div class="box">
+      <h2>ポジティブ（正解ラベル）</h2>
+      <textarea id="setPos"></textarea>
+    </div>
+    <div class="box">
+      <h2>中立（正解ラベル）</h2>
+      <textarea id="setNeu"></textarea>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button class="primary" id="run">全感度で実行</button>
+    <label>単発で確認:
+      <select id="lv">
+        <option value="strict">厳格</option>
+        <option value="normal">標準</option>
+        <option value="sensitive" selected>敏感</option>
+      </select>
+    </label>
+    <button id="runOne">この感度で実行</button>
+  </div>
+
+  <table id="tbl">
+    <thead>
+      <tr><th>感度</th><th>ネガ再現率</th><th>ネガ適合率</th><th>ポジ再現率</th><th>中立の正解率</th><th>全体正解率</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <div class="misses" id="misses"></div>
+</div>
+
+<script src="sentiment.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  // 既定のテストセット。中立には、形態素マッチが巻き込みやすい語をわざと入れてある
+  // （冷蔵庫・気圧・落語・停車・滞在・電圧 など）。
+  const DEFAULTS = {
+    neg: '稚拙 拙劣 荒天 悪路 難所 患部 重傷 損壊 破損 汚損 毀損 激痛 鈍痛 苦悩 悲嘆 憂慮 懸念 危惧 ' +
+         '脅威 恐慌 惨敗 完敗 敗退 失策 失態 失言 暴走 迷走 誤診 違反 違法 犯行 加害 被災 疲弊 衰退 ' +
+         '衰弱 老朽 劣化 混迷 不備 不調 残業 遅延 渋滞 停電 倒産 解雇 逮捕 訴訟 迷惑 故障 離婚 失恋 ' +
+         '頭痛 風邪 骨折 台風 猛暑 汚染 中傷 侮辱 孤立 だるい しんどい うんざり 憂鬱 挫折 悪夢 良くない',
+    pos: '好天 晴天 大成功 快勝 圧勝 完勝 連勝 全快 治癒 増収 増益 好転 改良 精進 誠意 善意 好意 厚意 ' +
+         '温情 温厚 慈愛 慈悲 敬愛 親愛 友愛 融和 協調 賛同 賞賛 幸運 吉報 朗報 明朗 快活 上等 優良 ' +
+         '優秀 秀逸 卓越 精巧 美麗 華麗 快晴 満開 合格 内定 昇進 完成 完治 優勝 表彰 絶景 傑作 好調 ' +
+         '円満 和解 団結 協力 支援 快眠 上達 達人 情熱 祝福 幸福 喜び 名誉 栄光 貢献 親切 悪くない',
+    neu: '湯呑 木材 砂利 針金 硝子 陶器 磁石 滑車 歯車 螺旋 台座 支柱 舗装 敷地 区画 番地 電圧 抵抗 ' +
+         '電流 周波数 波長 振幅 係数 定数 変数 関数 集合 座標 半径 直径 円周 対角線 冷蔵庫 気圧 削減 ' +
+         '落語 停車 滞在 有無 机 鉛筆 電池 洗濯 掃除 通勤 会議 資料 印刷 郵便 封筒 定規 番号 住所 ' +
+         '曜日 季節 温度 湿度 距離 面積 速度 質量 名前 職業 学校 教室 廊下 階段 玄関 台所 浴室 寝室 ' +
+         '倉庫 駐車場 交差点 信号 歩道 線路 改札 座席 帽子 靴下 醤油 味噌 包丁 茶碗 少ない'
+  };
+
+  const $ = id => document.getElementById(id);
+  const words = t => t.trim().split(/[\s,、。]+/).filter(Boolean);
+
+  $('setNeg').value = DEFAULTS.neg;
+  $('setPos').value = DEFAULTS.pos;
+  $('setNeu').value = DEFAULTS.neu;
+
+  function evaluate(level) {
+    Sentiment.setSensitivity(level);
+    const sets = { negative: words($('setNeg').value), positive: words($('setPos').value), neutral: words($('setNeu').value) };
+    const misses = [];
+    const hit = {};
+    let total = 0, correct = 0;
+
+    for (const gold of ['negative', 'positive', 'neutral']) {
+      let ok = 0;
+      for (const w of sets[gold]) {
+        const got = Sentiment.classify(w);
+        total++;
+        if (got === gold) { ok++; correct++; } else { misses.push({ word: w, gold, got }); }
+      }
+      hit[gold] = sets[gold].length ? ok / sets[gold].length : 0;
+    }
+
+    // ネガ適合率 = ネガと判定したもののうち本当にネガだった割合
+    const tp = sets.negative.filter(w => Sentiment.classify(w) === 'negative').length;
+    const fp = sets.positive.concat(sets.neutral).filter(w => Sentiment.classify(w) === 'negative').length;
+
+    return {
+      level,
+      negRecall: hit.negative,
+      negPrecision: (tp + fp) ? tp / (tp + fp) : 0,
+      posRecall: hit.positive,
+      neuAcc: hit.neutral,
+      overall: total ? correct / total : 0,
+      misses
+    };
+  }
+
+  function pct(v) { return (v * 100).toFixed(1) + '%'; }
+  function cls(v) { return v >= 0.85 ? 'good' : v >= 0.6 ? 'mid' : 'bad'; }
+
+  function render(rows, missesOf) {
+    const tb = $('tbl').querySelector('tbody');
+    tb.innerHTML = '';
+    const NAME = { strict: '厳格', normal: '標準', sensitive: '敏感' };
+    for (const r of rows) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td>' + NAME[r.level] + '</td>' +
+        ['negRecall', 'negPrecision', 'posRecall', 'neuAcc', 'overall']
+          .map(k => '<td class="num ' + cls(r[k]) + '">' + pct(r[k]) + '</td>').join('');
+      tb.appendChild(tr);
+    }
+
+    const box = $('misses');
+    box.innerHTML = '<h2>外した語（感度: ' + NAME[missesOf.level] + ' / ' + missesOf.misses.length + ' 件）</h2>';
+    if (!missesOf.misses.length) {
+      box.insertAdjacentHTML('beforeend', '<span class="chip">なし</span>');
+      return;
+    }
+    const JA = { negative: 'ネガ', positive: 'ポジ', neutral: '中立' };
+    for (const m of missesOf.misses) {
+      box.insertAdjacentHTML('beforeend',
+        '<span class="chip ' + m.got.slice(0, 3) + '">' + m.word +
+        ' <b>' + JA[m.gold] + '→' + JA[m.got] + '</b></span>');
+    }
+  }
+
+  $('run').addEventListener('click', () => {
+    const rows = ['strict', 'normal', 'sensitive'].map(evaluate);
+    render(rows, rows[2]);
+    Sentiment.setSensitivity('sensitive');
+  });
+
+  $('runOne').addEventListener('click', () => {
+    const r = evaluate($('lv').value);
+    render([r], r);
+  });
+
+  $('run').click();
+})();
+</script>
+</body>
+</html>

@@ -11,7 +11,7 @@
 <meta property="og:type" content="website">
 <link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="%2307080c"/><rect x="6" y="6" width="9" height="4" rx="2" fill="%234ee6a8"/><rect x="18" y="13" width="8" height="4" rx="2" fill="%238a93a6"/><rect x="4" y="21" width="24" height="5" rx="2.5" fill="%23ff4d6d"/></svg>'>
 <!-- ?v= はキャッシュ対策。ファイルを更新したらこの数字を上げると閲覧者に確実に届く。 -->
-<link rel="stylesheet" href="styles.css?v=2">
+<link rel="stylesheet" href="styles.css?v=6">
 </head>
 <body>
 
@@ -139,6 +139,21 @@
   </details>
 
   <details>
+    <summary>判定</summary>
+    <label class="row">感度
+      <select id="sensitivity">
+        <option value="strict">厳格（辞書の完全一致のみ）</option>
+        <option value="normal">標準</option>
+        <option value="sensitive" selected>敏感</option>
+      </select>
+    </label>
+    <div class="note">「敏感」は形態素や接頭辞からも推測するので取りこぼしが減りますが、中立語を巻き込むことがあります。「厳格」は辞書に載っている語だけを色分けします。</div>
+    <label class="row" style="margin-top:6px">語を試す</label>
+    <input type="text" id="probe" placeholder="単語を入力すると判定が出ます">
+    <div class="note" id="probeOut">—</div>
+  </details>
+
+  <details>
     <summary>トリガー</summary>
     <label class="row">ネガティブ到達数の閾値 <span class="val" id="thresholdOut"></span></label>
     <input type="range" id="threshold" min="1" max="200" step="1" value="20">
@@ -187,8 +202,8 @@
   <div class="hint" id="overlayHint">クリック / Esc で閉じる</div>
 </div>
 
-<script src="sentiment.js?v=2"></script>
-<script src="wordsource.js?v=2"></script>
-<script src="app.js?v=2"></script>
+<script src="sentiment.js?v=6"></script>
+<script src="wordsource.js?v=6"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>

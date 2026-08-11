@@ -69,6 +69,9 @@ input[type=text]:disabled { opacity: .45; }
 
 .note { color: var(--muted); font-size: 10.5px; line-height: 1.5; margin-top: 6px; }
 .note.warn { color: #ffc861; }
+.note.negative { color: var(--neg); font-size: 12px; }
+.note.positive { color: var(--pos); font-size: 12px; }
+.note.neutral  { color: var(--neu); font-size: 12px; }
 
 .radios { display: flex; gap: 12px; font-size: 12px; }
 .radios label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
