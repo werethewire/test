@@ -10,16 +10,27 @@
   'use strict';
 
   // ---- 内蔵プール ---------------------------------------------------------
+  // 1 文字の語は入れない。落ちてくるのが単語に見えないため。
   const BUILTIN = (
-    '愛 幸せ 光 夢 笑顔 希望 未来 感謝 平和 自由 音楽 花 星 海 空 虹 春 太陽 friend love hope ' +
-    '死 闇 不安 孤独 絶望 怒り 涙 戦争 崩壊 恐怖 病 事故 嘘 裏切り 炎上 貧困 差別 疲れた 最悪 無理 ' +
-    'hate fear pain broken lonely crisis danger stress panic error ' +
-    '街 電車 珈琲 猫 犬 本 雨 雪 風 山 川 石 鉄 紙 時計 椅子 窓 扉 道 橋 ' +
-    'city train coffee cat dog book rain snow wind mountain river stone iron paper clock chair window door road bridge ' +
-    '美しい 優しい 楽しい 嬉しい 温かい 明るい 新しい 強い 静か 豊か ' +
-    '痛い 苦しい 悲しい 汚い 冷たい 暗い 弱い 遅い 危険 不満 ' +
-    '記憶 時間 沈黙 呼吸 心臓 皮膚 骨 血 影 鏡 波 砂 灰 煙 泡 ' +
-    'memory time silence breath heart skin bone blood shadow mirror wave sand ash smoke'
+    // ポジティブ
+    '幸せ 笑顔 希望 未来 感謝 平和 自由 音楽 太陽 満開 快晴 優勝 合格 成功 感動 元気 健康 安心 ' +
+    '満足 充実 友達 家族 仲間 結婚 誕生 祝福 応援 情熱 青空 虹色 花束 星空 美しい 楽しい 嬉しい ' +
+    '優しい 温かい 明るい 面白い 可愛い 素敵 最高 ' +
+    // ネガティブ
+    '不安 孤独 絶望 怒り 戦争 崩壊 恐怖 事故 地震 台風 猛暑 渋滞 遅延 停電 残業 徹夜 借金 赤字 ' +
+    '倒産 解雇 逮捕 詐欺 炎上 中傷 差別 貧困 疲れた 最悪 無理 頭痛 風邪 骨折 入院 迷惑 故障 失敗 ' +
+    '挫折 離婚 失恋 裏切り 悲しい 苦しい 痛い 怖い 汚い 危険 ' +
+    // 中立
+    '都市 電車 珈琲 書店 時計 椅子 階段 玄関 台所 寝室 倉庫 信号 歩道 線路 改札 座席 交差点 ' +
+    '記憶 時間 沈黙 呼吸 心臓 皮膚 骨格 血液 陰影 反射 波紋 砂丘 灰色 煙突 雨音 雪原 風景 山脈 ' +
+    '河川 石段 鉄橋 温度 湿度 距離 速度 名前 職業 学校 教室 ' +
+    // 英語
+    'memory silence breath shadow mirror future window bridge station coffee library machine ' +
+    'garden season weather morning evening midnight distance velocity ' +
+    'happiness freedom courage kindness sunlight laughter friendship ' +
+    'anxiety loneliness despair disaster accident earthquake blackout overtime bankruptcy ' +
+    // 1 文字の語も少しだけ混ぜる
+    '愛 夢 光 闇 花 星 海 空 猫 雨 雪 風 死 涙 罪 影 鏡 波'
   ).split(/\s+/).filter(Boolean);
 
   // ---- 分かち書き ---------------------------------------------------------
@@ -32,6 +43,22 @@
     'not no so as by from about into out up down all any some just very too rw rt'
   ).split(/\s+/));
 
+  // 1 文字でも単語として通用する漢字。Intl.Segmenter は「弱まる」を 弱+まる のように割るので、
+  // 1 文字の語はこの表（と極性辞書）に載っているものだけ通し、残りはかけらとして捨てる。
+  const SINGLE_OK = new Set(Array.from(
+    '猫犬鳥魚虫花木森山川海空雲雨雪風星月日火水土金石鉄紙本道橋窓扉家街町村島湖池谷岩砂灰煙泡波氷炎' +
+    '光闇影夜朝昼夢恋愛命心骨血肌髪手足目耳口歯顔声音色味香熱時年春夏秋冬米塩油茶酒肉卵豆麦糸布服靴' +
+    '鍵傘鏡皿箸机車船駅店客王神仏死罪敵涙薬毒剣盾旗鐘笛歌絵詩本紙墨筆線点面体形数字名前金銀銅鉛錫' +
+    '雷霧露霜虹泥砂土壌畑田稲麦草苔蔦竹松梅桜菊蘭蓮藻貝蟹蛸鮫鯨鳩鷹梟猿熊狼狐兎鹿馬牛豚羊鶏蛇蛙亀'
+  ));
+
+  function isSingleWord(c) {
+    if (SINGLE_OK.has(c)) return true;
+    // 極性辞書に単独で載っている字（愛・悪・楽 など）も語として扱う
+    const S = global.Sentiment;
+    return !!(S && (S.NEG.has(c) || S.POS.has(c)));
+  }
+
   function acceptable(w) {
     if (!w) return false;
     w = w.trim();
@@ -39,9 +66,21 @@
     if (STOP.has(w.toLowerCase())) return false;
     if (/^\d+$/.test(w)) return false;                 // 数字だけ
     if (/^[\x00-\x40\x5b-\x60\x7b-\x7f]+$/.test(w)) return false; // 記号だけ
-    if (/^[ぁ-ん]{1,2}$/u.test(w)) return false;       // 助詞など短いひらがな
+    // 文字数はコードポイントで数える（絵文字やサロゲートペアを 2 文字と誤らないため）
+    const chars = Array.from(w);
+    const len = chars.length;
+    if (len < state.minLen) return false;
+    if (len > 16) return false;
+
+    if (len === 1) {
+      const c = chars[0];
+      // 1 文字のカタカナ・ひらがな・英字は、ほぼ確実に分割のかけら（ホ ザ ロ）
+      if (!/\p{Script=Han}/u.test(c)) return false;
+      return isSingleWord(c);
+    }
+
+    if (/^[ぁ-ん]{2}$/u.test(w)) return false;         // 助詞など短いひらがな
     if (/^[a-z]{1,2}$/i.test(w)) return false;         // 1〜2文字の英字
-    if (w.length > 16) return false;
     return true;
   }
 
@@ -77,6 +116,7 @@
   // ---- 状態 ---------------------------------------------------------------
   const state = {
     mode: 'builtin',
+    minLen: 1,           // 落とす語の最小文字数。1 でも「単語として通用する 1 文字」だけ通る
     buffer: [],
     pasted: [],
     x: { proxy: 'http://127.0.0.1:8787', query: 'lang:ja -is:retweet', lastFetch: 0, busy: false, cooldownMs: 20000 },
@@ -98,9 +138,25 @@
     if (state.buffer.length > 4000) state.buffer.splice(0, state.buffer.length - 4000);
   }
 
+  let builtinPool = BUILTIN.slice();
+  function refreshBuiltin() {
+    const p = BUILTIN.filter(acceptable);
+    builtinPool = p.length ? p : BUILTIN.slice();
+  }
+  refreshBuiltin();
+
   function setMode(mode) {
     state.mode = mode;
     state.buffer.length = 0;
+  }
+
+  function setMinLen(n) {
+    n = Math.max(1, Math.min(8, parseInt(n, 10) || 1));
+    state.minLen = n;
+    state.buffer.length = 0;                       // 古い条件で溜めた語は捨てる
+    state.pasted = state.pasted.filter(acceptable);
+    refreshBuiltin();
+    return n;
   }
 
   function setPastedText(text) {
@@ -206,7 +262,7 @@
   // ---- 取り出し -----------------------------------------------------------
   function take() {
     if (state.mode === 'builtin') {
-      return BUILTIN[(Math.random() * BUILTIN.length) | 0];
+      return builtinPool[(Math.random() * builtinPool.length) | 0];
     }
     if (state.mode === 'text') {
       if (!state.pasted.length) return null;
@@ -225,8 +281,8 @@
   }
 
   global.WordSource = {
-    state, take, setMode, setPastedText, setXConfig, setMastodonHost,
-    tokenize, htmlToText, fetchX, diagX, fetchMastodon,
+    state, take, setMode, setMinLen, setPastedText, setXConfig, setMastodonHost,
+    tokenize, htmlToText, fetchX, diagX, fetchMastodon, acceptable,
     set onStatus(fn) { state.onStatus = fn; }
   };
 })(window);

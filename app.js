@@ -529,6 +529,12 @@
     });
     el('btnLoadText').addEventListener('click', () => window.WordSource.setPastedText(el('pasteText').value));
 
+    el('minLen').value = String(window.WordSource.state.minLen);
+    el('minLen').addEventListener('change', e => {
+      const n = window.WordSource.setMinLen(e.target.value);
+      setStatus('最小文字数: ' + n + (n === 1 ? '（1 文字はかけらを除いて通します）' : ' 文字以上'), 'info');
+    });
+
     const applyX = () => window.WordSource.setXConfig(el('xProxy').value, el('xQuery').value);
     el('xProxy').addEventListener('change', applyX);
     el('xQuery').addEventListener('change', applyX);
