@@ -11,7 +11,7 @@
 <meta property="og:type" content="website">
 <link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="%2307080c"/><rect x="6" y="6" width="9" height="4" rx="2" fill="%234ee6a8"/><rect x="18" y="13" width="8" height="4" rx="2" fill="%238a93a6"/><rect x="4" y="21" width="24" height="5" rx="2.5" fill="%23ff4d6d"/></svg>'>
 <!-- ?v= はキャッシュ対策。ファイルを更新したらこの数字を上げると閲覧者に確実に届く。 -->
-<link rel="stylesheet" href="styles.css?v=7">
+<link rel="stylesheet" href="styles.css?v=12">
 </head>
 <body>
 
@@ -35,6 +35,8 @@
       <label><input type="radio" name="src" value="builtin" checked> 内蔵</label>
       <label><input type="radio" name="src" value="text"> テキスト</label>
       <label><input type="radio" name="src" value="mastodon"> Mastodon</label>
+      <label><input type="radio" name="src" value="bluesky"> Bluesky</label>
+      <label><input type="radio" name="src" value="hackernews"> Hacker News</label>
       <label><input type="radio" name="src" value="x"> X</label>
     </div>
 
@@ -48,6 +50,23 @@
       <input type="text" id="mHost" value="mstdn.jp" placeholder="mstdn.jp">
       <div class="btns" style="margin-top:6px"><button id="btnFetchM">今すぐ取得</button></div>
       <div class="note">公開タイムラインを 10 秒間隔で補充します。CORS を許可していないインスタンスは使えません（確認済み: mstdn.jp / fedibird.com）。</div>
+    </div>
+
+    <div id="paneBluesky" hidden style="margin-top:8px">
+      <label class="row">フィード <span class="val">認証不要</span></label>
+      <select id="bFeed">
+        <option value="jp" selected>JP（日本語中心）</option>
+        <option value="hot">What's Hot（多言語）</option>
+        <option value="__custom__">カスタム at:// URI</option>
+      </select>
+      <input type="text" id="bCustom" placeholder="at://did:plc:.../app.bsky.feed.generator/..." disabled style="margin-top:6px">
+      <div class="btns" style="margin-top:6px"><button id="btnFetchB">今すぐ取得</button></div>
+      <div class="note">公開フィードを 10 秒間隔で補充します。検索 API (searchPosts) は CORS 非対応なのでフィード経由で取得しています。</div>
+    </div>
+
+    <div id="paneHN" hidden style="margin-top:8px">
+      <div class="btns"><button id="btnFetchH">今すぐ取得</button></div>
+      <div class="note">Hacker News の最新コメントを Algolia API から取得します。英語のみです。</div>
     </div>
 
     <div id="paneX" hidden style="margin-top:8px">
@@ -142,7 +161,14 @@
         <option value="vanish">消える</option>
       </select>
     </label>
-    <div class="note">既定はネガティブのみ積み上がり、ポジティブと中立は画面下で消えます。</div>
+    <label class="row">トリガー語
+      <select id="beh_trigger">
+        <option value="pile">積み上がる</option>
+        <option value="bottom">下段に重なる</option>
+        <option value="vanish">消える</option>
+      </select>
+    </label>
+    <div class="note">既定はネガティブのみ積み上がり、ポジティブと中立は画面下で消えます。トリガー語に指定した語は極性より優先され、金色で降ってきます。</div>
   </details>
 
   <details>
@@ -162,12 +188,29 @@
 
   <details>
     <summary>トリガー</summary>
-    <label class="row">ネガティブ到達数の閾値 <span class="val" id="thresholdOut"></span></label>
+    <label class="row">数える対象
+      <select id="trigTarget">
+        <option value="negative" selected>ネガティブな語</option>
+        <option value="positive">ポジティブな語</option>
+        <option value="neutral">中立の語</option>
+        <option value="any">すべての語</option>
+        <option value="words">指定した単語</option>
+      </select>
+    </label>
+
+    <div id="paneTrigWords" hidden style="margin-top:6px">
+      <label class="row">トリガー語（空白・カンマ区切り）</label>
+      <input type="text" id="trigWords" placeholder="例: 地震 台風 停電">
+      <label class="check"><input type="checkbox" id="trigPartial" checked> 部分一致で数える（地震 → 地震速報 も数える）</label>
+      <div class="note" id="trigWordsNote">—</div>
+    </div>
+
+    <label class="row" style="margin-top:6px">到達数の閾値 <span class="val" id="thresholdOut"></span></label>
     <input type="range" id="threshold" min="1" max="200" step="1" value="20">
 
     <div class="gauge"><div id="gaugeFill"></div></div>
     <div class="counts" style="margin-bottom:8px">
-      <span>到達ネガ <b id="gaugeLabel">0 / 20</b></span>
+      <span id="gaugeCaption">到達ネガ</span> <b id="gaugeLabel">0 / 20</b>
     </div>
 
     <label class="row">映像ファイル</label>
@@ -185,7 +228,7 @@
   <details open>
     <summary>状況</summary>
     <div class="counts">
-      <span class="neg">到達ネガ <b id="cNeg">0</b></span>
+      <span class="neg">到達数 <b id="cNeg">0</b></span>
       <span class="neg">生成ネガ <b id="cNegTotal">0</b></span>
       <span class="pos">ポジ <b id="cPos">0</b></span>
       <span class="neu">中立 <b id="cNeu">0</b></span>
@@ -209,8 +252,8 @@
   <div class="hint" id="overlayHint">クリック / Esc で閉じる</div>
 </div>
 
-<script src="sentiment.js?v=7"></script>
-<script src="wordsource.js?v=7"></script>
-<script src="app.js?v=7"></script>
+<script src="sentiment.js?v=12"></script>
+<script src="wordsource.js?v=12"></script>
+<script src="app.js?v=12"></script>
 </body>
 </html>

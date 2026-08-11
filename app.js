@@ -27,7 +27,8 @@
   const COLORS = {
     positive: { fill: '#4ee6a8', glow: 'rgba(78,230,168,.55)' },
     negative: { fill: '#ff4d6d', glow: 'rgba(255,77,109,.55)' },
-    neutral:  { fill: '#8a93a6', glow: 'rgba(138,147,166,.35)' }
+    neutral:  { fill: '#8a93a6', glow: 'rgba(138,147,166,.35)' },
+    trigger:  { fill: '#ffc861', glow: 'rgba(255,200,97,.65)' }   // 指定したトリガー語
   };
 
   const DEFAULT_FAMILY = '"Noto Sans JP","Yu Gothic UI","Hiragino Kaku Gothic ProN","Meiryo",system-ui,sans-serif';
@@ -50,7 +51,9 @@
     //   'pile'   = 積み上がる（先に積まれた語の上に乗る）
     //   'bottom' = 画面下の一行に重なって残る
     //   'vanish' = 消える
-    behavior: { negative: 'pile', positive: 'vanish', neutral: 'vanish' }
+    behavior: { negative: 'pile', positive: 'vanish', neutral: 'vanish', trigger: 'pile' },
+    // 閾値に数える対象: 'negative' | 'positive' | 'neutral' | 'any' | 'words'
+    trigger: { target: 'negative', words: [], partial: true }
   };
 
   const sim = {
@@ -60,7 +63,7 @@
     landed: [],
     fading: [],
     counts: { positive: 0, negative: 0, neutral: 0 },
-    reachedNegative: 0,          // 画面下に到達したネガティブ語（トリガーの対象）
+    reached: 0,                  // 画面下に到達した「数える対象」の語の数
     nextSpawn: 0,
     pileFull: false,
     fired: false,
@@ -139,15 +142,47 @@
     rebuildHeightmap();
   }
 
+  // ---- トリガー語の照合 ---------------------------------------------------
+  // カタカナ→ひらがな・小文字化して比べる（「ウザい」と「うざい」を同一視）
+  function normKey(s) {
+    return String(s).toLowerCase().replace(/[ァ-ヶ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60));
+  }
+
+  function isTriggerWord(text) {
+    const list = cfg.trigger.words;
+    if (!list.length) return false;
+    const k = normKey(text);
+    // 部分一致は「落ちてきた語がトリガー語を含む」方向だけ。逆向きも許すと
+    // トリガー語「台風」に対して「風」が当たってしまう。
+    return cfg.trigger.partial
+      ? list.some(w => k.includes(w))
+      : list.some(w => k === w);
+  }
+
+  // 画面下に着いた語が閾値に数えられるか
+  function countsToward(w) {
+    const t = cfg.trigger.target;
+    if (t === 'any') return true;
+    if (t === 'words') return w.isTrigger;
+    return w.label === t;
+  }
+
+  // 表示と振る舞いに使うカテゴリ。トリガー語は極性より優先する。
+  function categoryOf(w) {
+    return (cfg.trigger.target === 'words' && w.isTrigger) ? 'trigger' : w.label;
+  }
+
   function spawn() {
     const text = window.WordSource.take();
     if (!text) {
       const mode = window.WordSource.state.mode;
-      sim.skip = mode === 'x'
-        ? 'X から語を取得できていません（x_proxy.py の起動とトークンを確認、または「接続を診断」）'
-        : mode === 'mastodon'
-          ? 'Mastodon から語を取得できていません（インスタンス名を確認してください）'
-          : '単語ソースが空です（テキストを取り込むか、ソースを「内蔵」に戻してください）';
+      const SKIP = {
+        x: 'X から語を取得できていません（x_proxy.py の起動とトークンを確認、または「接続を診断」）',
+        mastodon: 'Mastodon から語を取得できていません（インスタンス名を確認してください）',
+        bluesky: 'Bluesky から語を取得できていません（フィードの指定を確認してください）',
+        hackernews: 'Hacker News から語を取得できていません'
+      };
+      sim.skip = SKIP[mode] || '単語ソースが空です（テキストを取り込むか、ソースを「内蔵」に戻してください）';
       return;
     }
 
@@ -155,7 +190,8 @@
     if (label === 'neutral' && !cfg.showNeutral) { sim.skip = '中立語のみ生成されています（「ニュートラル語も表示」を入れてください）'; return; }
 
     const size = cfg.sizeMin + Math.random() * Math.max(0, cfg.sizeMax - cfg.sizeMin);
-    const w = { text, label, size, vk: 0.65 + Math.random() * 0.8, x: 0, y: 0, w: 0, h: 0, pad: 0, mode: null };
+    const w = { text, label, size, vk: 0.65 + Math.random() * 0.8, x: 0, y: 0, w: 0, h: 0, pad: 0,
+                mode: null, isTrigger: isTriggerWord(text) };
     measure(w);
     if (w.w > W) { sim.skip = '語が画面幅より広く捨てられています（文字サイズ最大を下げてください）'; return; }
 
@@ -190,7 +226,7 @@
       const w = sim.falling[i];
       w.y += cfg.speed * w.vk * dt;
 
-      const mode = cfg.behavior[w.label];
+      const mode = cfg.behavior[categoryOf(w)];
       // 積み上がる語は堆積の表面で止まる。それ以外は画面下端まで落ちる。
       const stopAt = mode === 'pile' ? surfaceY(w) : H;
       if (w.y + w.h < stopAt) continue;
@@ -199,8 +235,8 @@
       w.mode = mode;
       sim.falling.splice(i, 1);
 
-      if (w.label === 'negative') {
-        sim.reachedNegative++;
+      if (countsToward(w)) {
+        sim.reached++;
         checkTrigger();
       }
 
@@ -234,7 +270,7 @@
   function drawWord(w, alpha) {
     ctx.globalAlpha = alpha;
     ctx.font = fontFor(w.size);
-    ctx.fillStyle = COLORS[w.label].fill;
+    ctx.fillStyle = COLORS[categoryOf(w)].fill;
     ctx.fillText(w.text, w.x + w.pad, w.y + w.h * 0.06);
   }
 
@@ -248,7 +284,7 @@
 
     ctx.globalAlpha = 1;
     for (const w of sim.falling) {
-      const c = COLORS[w.label];
+      const c = COLORS[categoryOf(w)];
       ctx.font = fontFor(w.size);
       ctx.shadowColor = c.glow;
       ctx.shadowBlur = Math.min(28, w.size * 0.5);
@@ -273,16 +309,22 @@
   const el = id => document.getElementById(id);
 
   function updateHUD() {
-    el('cNeg').textContent = sim.reachedNegative;
+    el('cNeg').textContent = sim.reached;
     el('cNegTotal').textContent = sim.counts.negative;
     el('cPos').textContent = sim.counts.positive;
     el('cNeu').textContent = sim.counts.neutral;
     el('cAir').textContent = sim.falling.length;
     el('cPile').textContent = sim.landed.length;
-    const p = Math.min(1, sim.reachedNegative / Math.max(1, cfg.threshold));
+    const p = Math.min(1, sim.reached / Math.max(1, cfg.threshold));
     el('gaugeFill').style.width = (p * 100).toFixed(1) + '%';
-    el('gaugeLabel').textContent = sim.reachedNegative + ' / ' + cfg.threshold;
+    el('gaugeLabel').textContent = sim.reached + ' / ' + cfg.threshold;
+    el('gaugeCaption').textContent = '到達 ' + targetLabel();
   }
+
+  const TARGET_JA = {
+    negative: 'ネガ', positive: 'ポジ', neutral: '中立', any: 'すべて', words: 'トリガー語'
+  };
+  function targetLabel() { return TARGET_JA[cfg.trigger.target] || cfg.trigger.target; }
 
   function setStatus(msg, kind) {
     const s = el('status');
@@ -314,7 +356,7 @@
 
   function checkTrigger() {
     if (sim.fired) return;
-    if (sim.reachedNegative < cfg.threshold) return;
+    if (sim.reached < cfg.threshold) return;
     sim.fired = true;
     fire();
   }
@@ -357,7 +399,7 @@
       beep();
       setTimeout(endTrigger, 2500);
     }
-    setStatus('トリガー発火: ネガティブ ' + sim.reachedNegative + ' 個', 'err');
+    setStatus('トリガー発火: ' + targetLabel() + ' ' + sim.reached + ' 個', 'err');
   }
 
   function endTrigger() {
@@ -370,7 +412,7 @@
     el('overlayHint').textContent = 'クリック / Esc で閉じる';
     sim.paused = false;
     if (cfg.autoReset) {
-      sim.reachedNegative = 0;
+      sim.reached = 0;
       clearPile();
     }
     sim.fired = false;
@@ -406,7 +448,7 @@
     sim.falling.length = 0;
     clearPile();
     sim.counts = { positive: 0, negative: 0, neutral: 0 };
-    sim.reachedNegative = 0;
+    sim.reached = 0;
     sim.fired = false;
     setStatus('リセットしました', 'info');
   }
@@ -468,7 +510,7 @@
     el('showNeutral').addEventListener('change', e => { cfg.showNeutral = e.target.checked; });
     el('autoReset').addEventListener('change', e => { cfg.autoReset = e.target.checked; });
 
-    ['negative', 'positive', 'neutral'].forEach(k => {
+    ['negative', 'positive', 'neutral', 'trigger'].forEach(k => {
       const s = el('beh_' + k);
       s.value = cfg.behavior[k];
       s.addEventListener('change', () => { cfg.behavior[k] = s.value; });
@@ -514,17 +556,56 @@
     el('btnReset').addEventListener('click', resetAll);
     el('btnTest').addEventListener('click', () => { sim.fired = true; fire(); });
 
+    // トリガーの対象と、任意のトリガー語
+    const applyTriggerWords = () => {
+      cfg.trigger.words = el('trigWords').value
+        .split(/[\s,、，]+/).map(s => normKey(s.trim())).filter(Boolean);
+      cfg.trigger.partial = el('trigPartial').checked;
+      el('trigWordsNote').textContent = cfg.trigger.words.length
+        ? cfg.trigger.words.length + ' 語を監視中' + (cfg.trigger.partial ? '（部分一致）' : '（完全一致）')
+        : 'トリガー語が空です。1 語以上入れてください';
+      el('trigWordsNote').className = 'note' + (cfg.trigger.words.length ? '' : ' warn');
+      // 落下中の語にも即座に反映する
+      for (const w of sim.falling) w.isTrigger = isTriggerWord(w.text);
+    };
+    // 数える対象を変えたら、その対象が積み上がるように振る舞いも合わせる。
+    // そうしないと（例えばトリガー語を数えているのに）ネガが積もって画面が埋まり、
+    // 閾値に届く前に出現が止まってしまう。切り替えたあと個別に変更してよい。
+    const AUTO_BEH = {
+      negative: { negative: 'pile',   positive: 'vanish', neutral: 'vanish', trigger: 'vanish' },
+      positive: { negative: 'vanish', positive: 'pile',   neutral: 'vanish', trigger: 'vanish' },
+      neutral:  { negative: 'vanish', positive: 'vanish', neutral: 'pile',   trigger: 'vanish' },
+      any:      { negative: 'bottom', positive: 'bottom', neutral: 'bottom', trigger: 'bottom' },
+      words:    { negative: 'vanish', positive: 'vanish', neutral: 'vanish', trigger: 'pile' }
+    };
+    el('trigTarget').addEventListener('change', e => {
+      cfg.trigger.target = e.target.value;
+      el('paneTrigWords').hidden = e.target.value !== 'words';
+      sim.reached = 0;                    // 対象が変わったら数え直す
+      sim.fired = false;
+      clearPile();
+      const beh = AUTO_BEH[e.target.value];
+      if (beh) {
+        Object.assign(cfg.behavior, beh);
+        for (const k of Object.keys(beh)) el('beh_' + k).value = beh[k];
+      }
+      applyTriggerWords();
+      setStatus('数える対象: ' + e.target.options[e.target.selectedIndex].text +
+                '（積み上がる対象も合わせました）', 'info');
+    });
+    el('trigWords').addEventListener('input', applyTriggerWords);
+    el('trigPartial').addEventListener('change', applyTriggerWords);
+    applyTriggerWords();
+
     // 単語ソース
+    const PANES = { text: 'paneText', mastodon: 'paneMastodon', bluesky: 'paneBluesky', hackernews: 'paneHN', x: 'paneX' };
     document.querySelectorAll('input[name="src"]').forEach(r => {
       r.addEventListener('change', () => {
         const mode = document.querySelector('input[name="src"]:checked').value;
         window.WordSource.setMode(mode);
-        el('paneText').hidden = mode !== 'text';
-        el('paneX').hidden = mode !== 'x';
-        el('paneMastodon').hidden = mode !== 'mastodon';
+        for (const [m, id] of Object.entries(PANES)) el(id).hidden = m !== mode;
         setStatus('ソース: ' + mode, 'info');
-        if (mode === 'x') window.WordSource.fetchX(true);
-        if (mode === 'mastodon') window.WordSource.fetchMastodon(true);
+        window.WordSource.fetchNow(mode);
       });
     });
     el('btnLoadText').addEventListener('click', () => window.WordSource.setPastedText(el('pasteText').value));
@@ -554,6 +635,18 @@
     el('mHost').addEventListener('change', applyMasto);
     el('btnFetchM').addEventListener('click', () => { applyMasto(); window.WordSource.fetchMastodon(true); });
     applyMasto();
+
+    const applyBsky = () => {
+      const sel = el('bFeed').value;
+      el('bCustom').disabled = sel !== '__custom__';
+      window.WordSource.setBlueskyFeed(sel === '__custom__' ? (el('bCustom').value.trim() || 'jp') : sel);
+    };
+    el('bFeed').addEventListener('change', applyBsky);
+    el('bCustom').addEventListener('change', applyBsky);
+    el('btnFetchB').addEventListener('click', () => { applyBsky(); window.WordSource.fetchBluesky(true); });
+    applyBsky();
+
+    el('btnFetchH').addEventListener('click', () => window.WordSource.fetchHackerNews(true));
 
     // メディア
     el('videoFile').addEventListener('change', e => {
@@ -591,7 +684,8 @@
     el('btnToggle').addEventListener('click', () => el('panel').classList.toggle('hidden'));
 
     // 外部から触れるフック（デバッグ・自動化用）
-    window.WordRain = { sim, cfg, spawn, update, render, clearPile, resetAll, fire, endTrigger, setStatus, remeasureAll, rebuildHeightmap };
+    window.WordRain = { sim, cfg, spawn, update, render, updateHUD, clearPile, resetAll, fire,
+                        endTrigger, setStatus, remeasureAll, rebuildHeightmap, isTriggerWord, countsToward, categoryOf };
 
     window.WordSource.onStatus = setStatus;
     setStatus('内蔵ワードプールで動作中。「開始」を押してください（H でパネル開閉）', 'info');

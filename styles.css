@@ -26,6 +26,8 @@ html, body {
 #panel {
   position: fixed; top: 12px; left: 12px; width: 316px;
   max-height: calc(100vh - 24px); overflow-y: auto;
+  /* 下端に貼り付いた操作ボタンの下にコントロールが潜り込まないようにする */
+  scroll-padding-bottom: 64px;
   background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
   padding: 14px; backdrop-filter: blur(8px);
   box-shadow: 0 12px 40px rgba(0,0,0,.55);
