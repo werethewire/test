@@ -1,0 +1,151 @@
+:root {
+  --bg: #07080c;
+  --panel: rgba(16, 18, 26, .92);
+  --line: #262b3a;
+  --text: #dfe4ee;
+  --muted: #8a93a6;
+  --pos: #4ee6a8;
+  --neg: #ff4d6d;
+  --neu: #8a93a6;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; height: 100%; overflow: hidden;
+  background: var(--bg); color: var(--text);
+  font: 13px/1.5 "Noto Sans JP", "Yu Gothic UI", "Hiragino Kaku Gothic ProN", Meiryo, system-ui, sans-serif;
+}
+
+#stage {
+  position: fixed; inset: 0; width: 100%; height: 100%;
+  background: radial-gradient(120% 80% at 50% 0%, #10131d 0%, #07080c 70%);
+}
+
+/* ---- コントロールパネル ---- */
+#panel {
+  position: fixed; top: 12px; left: 12px; width: 316px;
+  max-height: calc(100vh - 24px); overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  padding: 14px; backdrop-filter: blur(8px);
+  box-shadow: 0 12px 40px rgba(0,0,0,.55);
+  transition: transform .2s ease, opacity .2s ease;
+}
+#panel.hidden { transform: translateX(-340px); opacity: 0; pointer-events: none; }
+
+h1 { margin: 0 0 10px; font-size: 14px; letter-spacing: .06em; }
+h1 span { color: var(--muted); font-weight: 400; font-size: 11px; }
+
+details {
+  border: 1px solid var(--line); border-radius: 9px; margin: 0 0 8px; padding: 0 10px;
+  background: rgba(255,255,255,.015);
+}
+details[open] { padding-bottom: 11px; }
+summary {
+  color: var(--muted); font-size: 11px; letter-spacing: .04em;
+  padding: 8px 2px; cursor: pointer; list-style: none; user-select: none;
+}
+summary::-webkit-details-marker { display: none; }
+summary::before { content: '▸ '; display: inline-block; width: 12px; }
+details[open] > summary::before { content: '▾ '; }
+summary:hover { color: var(--text); }
+
+label.row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 7px 0 2px; font-size: 12px; }
+label.row .val { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11px; }
+input[type=range] { width: 100%; accent-color: #5b8cff; margin: 0 0 4px; }
+input[type=text], textarea {
+  width: 100%; background: #0c0f18; border: 1px solid var(--line); border-radius: 6px;
+  color: var(--text); padding: 6px 8px; font: inherit; font-size: 12px;
+}
+textarea { resize: vertical; min-height: 66px; }
+input[type=file] { width: 100%; font-size: 11px; color: var(--muted); }
+select {
+  background: #0c0f18; border: 1px solid var(--line); border-radius: 6px;
+  color: var(--text); padding: 5px 6px; font: inherit; font-size: 12px; max-width: 100%;
+}
+label.row select { flex: 0 0 auto; }
+#fontFamily, #fontWeight { width: 100%; }
+input[type=text]:disabled { opacity: .45; }
+
+.note { color: var(--muted); font-size: 10.5px; line-height: 1.5; margin-top: 6px; }
+.note.warn { color: #ffc861; }
+
+.radios { display: flex; gap: 12px; font-size: 12px; }
+.radios label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.check { display: flex; align-items: center; gap: 6px; font-size: 12px; margin: 6px 0 0; cursor: pointer; }
+
+.btns { display: flex; gap: 6px; flex-wrap: wrap; }
+button {
+  flex: 1 1 auto; background: #1a2032; color: var(--text);
+  border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px;
+  font: inherit; font-size: 12px; cursor: pointer;
+}
+button:hover { background: #232b42; }
+button.on { background: #b4243c; border-color: #d84a60; }
+button.primary { background: #24406e; border-color: #37598f; }
+
+.mname { color: var(--muted); font-size: 11px; word-break: break-all; margin: 2px 0 6px; }
+
+/* パネルが縦に長いので、開始ボタンの行は常に見える位置に貼り付ける */
+.actions {
+  position: sticky; bottom: -14px; z-index: 2;
+  background: var(--panel); padding: 10px 0 14px; margin-bottom: -14px;
+  border-top: 1px solid var(--line);
+}
+
+/* ---- 計測 ---- */
+.gauge { height: 8px; background: #141824; border-radius: 5px; overflow: hidden; margin: 6px 0 4px; }
+.gauge > div { height: 100%; width: 0; background: linear-gradient(90deg, #ff4d6d55, #ff4d6d); transition: width .15s linear; }
+.counts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 3px 10px; font-size: 11px; color: var(--muted); }
+.counts b { font-variant-numeric: tabular-nums; font-weight: 600; }
+.neg b { color: var(--neg); } .pos b { color: var(--pos); } .neu b { color: var(--neu); }
+
+.status { margin-top: 8px; font-size: 11px; line-height: 1.45; color: var(--muted); min-height: 2.2em; }
+.status.ok { color: var(--pos); }
+.status.warn { color: #ffc861; }
+.status.err { color: var(--neg); }
+
+#btnToggle {
+  position: fixed; top: 12px; right: 12px; width: auto; flex: none;
+  background: rgba(16,18,26,.9); z-index: 5;
+}
+
+/* ---- トリガーオーバーレイ ---- */
+#fatal {
+  position: fixed; left: 50%; top: 24px; transform: translateX(-50%);
+  max-width: min(720px, 90vw); z-index: 80;
+  background: #3a0b16; border: 1px solid var(--neg); border-radius: 9px;
+  color: #ffd7de; padding: 10px 14px; font-size: 12px; line-height: 1.6;
+}
+
+#overlay {
+  position: fixed; inset: 0; z-index: 50; background: #000;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; transition: opacity .25s ease;
+}
+/* hidden 属性の UA スタイル(display:none)より上の display:flex が勝ってしまうため、
+   明示的に打ち消す。これが無いと透明なオーバーレイが全クリックを吸う。 */
+#overlay[hidden] { display: none; }
+#overlay.on { opacity: 1; }
+#overlay video { max-width: 100%; max-height: 100%; }
+#overlay.flash { animation: flash .5s steps(2) infinite; }
+@keyframes flash { 0% { background: #000; } 50% { background: #7a0018; } 100% { background: #000; } }
+/* ---- スマホ ---- */
+@media (max-width: 640px) {
+  #panel {
+    left: 8px; right: 8px; width: auto; top: 8px;
+    max-height: 64vh; padding: 12px;
+  }
+  #panel.hidden { transform: translateY(-130%); }
+  #btnToggle { top: 8px; right: 8px; padding: 10px 14px; }
+  .radios { flex-wrap: wrap; gap: 8px 14px; }
+  summary { padding: 11px 2px; font-size: 12px; }
+  button { padding: 10px 12px; }
+  input[type=range] { height: 26px; }
+  label.row { margin: 9px 0 2px; }
+}
+
+#overlay .hint {
+  position: absolute; bottom: 18px; left: 0; right: 0; text-align: center;
+  color: #6d7488; font-size: 12px;
+}

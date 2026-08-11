@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Word Rain — 落下する単語</title>
+<meta name="description" content="単語が降ってきて、ネガティブな語だけが画面下に積み上がる。指定の数に達すると映像と音声が流れます。">
+<meta name="theme-color" content="#07080c">
+<meta property="og:title" content="Word Rain — 落下する単語">
+<meta property="og:description" content="単語が降ってきて、ネガティブな語だけが画面下に積み上がる。">
+<meta property="og:type" content="website">
+<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="%2307080c"/><rect x="6" y="6" width="9" height="4" rx="2" fill="%234ee6a8"/><rect x="18" y="13" width="8" height="4" rx="2" fill="%238a93a6"/><rect x="4" y="21" width="24" height="5" rx="2.5" fill="%23ff4d6d"/></svg>'>
+<!-- ?v= はキャッシュ対策。ファイルを更新したらこの数字を上げると閲覧者に確実に届く。 -->
+<link rel="stylesheet" href="styles.css?v=2">
+</head>
+<body>
+
+<canvas id="stage"></canvas>
+
+<button id="btnToggle">パネル</button>
+
+<div id="panel">
+  <h1>WORD RAIN <span>／ H でパネル開閉</span></h1>
+
+  <details open>
+    <summary>単語ソース</summary>
+    <div class="radios">
+      <label><input type="radio" name="src" value="builtin" checked> 内蔵</label>
+      <label><input type="radio" name="src" value="text"> テキスト</label>
+      <label><input type="radio" name="src" value="mastodon"> Mastodon</label>
+      <label><input type="radio" name="src" value="x"> X</label>
+    </div>
+
+    <div id="paneText" hidden style="margin-top:8px">
+      <textarea id="pasteText" placeholder="ここにテキストを貼り付け（日本語は自動で分かち書きします）"></textarea>
+      <div class="btns" style="margin-top:6px"><button id="btnLoadText">取り込む</button></div>
+    </div>
+
+    <div id="paneMastodon" hidden style="margin-top:8px">
+      <label class="row">インスタンス <span class="val">認証不要</span></label>
+      <input type="text" id="mHost" value="mstdn.jp" placeholder="mstdn.jp">
+      <div class="btns" style="margin-top:6px"><button id="btnFetchM">今すぐ取得</button></div>
+      <div class="note">公開タイムラインを 10 秒間隔で補充します。CORS を許可していないインスタンスは使えません（確認済み: mstdn.jp / fedibird.com）。</div>
+    </div>
+
+    <div id="paneX" hidden style="margin-top:8px">
+      <label class="row">プロキシ URL</label>
+      <input type="text" id="xProxy" value="http://127.0.0.1:8787">
+      <label class="row" style="margin-top:6px">検索クエリ</label>
+      <input type="text" id="xQuery" value="lang:ja -is:retweet">
+      <div class="btns" style="margin-top:6px">
+        <button id="btnFetchX">今すぐ取得</button>
+        <button id="btnDiagX">接続を診断</button>
+      </div>
+      <div class="note">x_proxy.py の起動と Bearer トークンが必要です。取得できないときは「接続を診断」を押すと原因が出ます。</div>
+    </div>
+  </details>
+
+  <details>
+    <summary>文字</summary>
+    <label class="row">フォント</label>
+    <select id="fontFamily">
+      <option value='"Noto Sans JP","Yu Gothic UI","Hiragino Kaku Gothic ProN","Meiryo",system-ui,sans-serif'>既定（ゴシック）</option>
+      <option value='"Yu Gothic UI","Yu Gothic",sans-serif'>游ゴシック</option>
+      <option value='"Meiryo",sans-serif'>メイリオ</option>
+      <option value='"MS PGothic","MS Gothic",sans-serif'>MS ゴシック</option>
+      <option value='"Yu Mincho","MS PMincho",serif'>游明朝</option>
+      <option value='"MS PMincho","MS Mincho",serif'>MS 明朝</option>
+      <option value='"BIZ UDPGothic","BIZ UDGothic",sans-serif'>BIZ UDゴシック</option>
+      <option value='"UD デジタル 教科書体 N-R","UD Digi Kyokasho N-R",serif'>UD デジタル教科書体</option>
+      <option value='"HGP創英角ﾎﾟｯﾌﾟ体","HGSoeiKakupoptai",sans-serif'>HG創英角ポップ体</option>
+      <option value='Impact,"Arial Black",sans-serif'>Impact</option>
+      <option value='Georgia,"Times New Roman",serif'>Georgia</option>
+      <option value='Consolas,"Courier New","MS Gothic",monospace'>Consolas（等幅）</option>
+      <option id="optFontFile" value='"WordRainCustom"' hidden>読み込んだファイル</option>
+      <option value="__custom__">カスタム指定（下の欄）</option>
+    </select>
+
+    <label class="row" style="margin-top:6px">カスタム font-family</label>
+    <input type="text" id="fontCustom" placeholder='例: "Zen Maru Gothic", sans-serif' disabled>
+
+    <label class="row" style="margin-top:6px">フォントファイル (.ttf/.otf/.woff2)</label>
+    <input type="file" id="fontFile" accept=".ttf,.otf,.woff,.woff2,font/*">
+
+    <label class="row" style="margin-top:6px">太さ</label>
+    <select id="fontWeight">
+      <option value="300">300 Light</option>
+      <option value="400">400 Regular</option>
+      <option value="600" selected>600 SemiBold</option>
+      <option value="800">800 ExtraBold</option>
+      <option value="900">900 Black</option>
+    </select>
+
+    <label class="row" style="margin-top:8px">文字サイズ 最小 <span class="val" id="sizeMinOut"></span></label>
+    <input type="range" id="sizeMin" min="10" max="80" step="1" value="18">
+
+    <label class="row">文字サイズ 最大 <span class="val" id="sizeMaxOut"></span></label>
+    <input type="range" id="sizeMax" min="12" max="160" step="1" value="64">
+  </details>
+
+  <details open>
+    <summary>落下</summary>
+    <label class="row">落下速度 <span class="val" id="speedOut"></span></label>
+    <input type="range" id="speed" min="10" max="800" step="5" value="140">
+
+    <label class="row">出現間隔 最短 <span class="val" id="spawnMinOut"></span></label>
+    <input type="range" id="spawnMin" min="20" max="2000" step="10" value="200">
+
+    <label class="row">出現間隔 最長 <span class="val" id="spawnMaxOut"></span></label>
+    <input type="range" id="spawnMax" min="50" max="4000" step="10" value="1100">
+
+    <label class="check"><input type="checkbox" id="showNeutral" checked> ニュートラル語も表示</label>
+  </details>
+
+  <details>
+    <summary>画面下に着いたら</summary>
+    <label class="row">ネガティブ
+      <select id="beh_negative">
+        <option value="pile">積み上がる</option>
+        <option value="bottom">下段に重なる</option>
+        <option value="vanish">消える</option>
+      </select>
+    </label>
+    <label class="row">ポジティブ
+      <select id="beh_positive">
+        <option value="pile">積み上がる</option>
+        <option value="bottom">下段に重なる</option>
+        <option value="vanish">消える</option>
+      </select>
+    </label>
+    <label class="row">ニュートラル
+      <select id="beh_neutral">
+        <option value="pile">積み上がる</option>
+        <option value="bottom">下段に重なる</option>
+        <option value="vanish">消える</option>
+      </select>
+    </label>
+    <div class="note">既定はネガティブのみ積み上がり、ポジティブと中立は画面下で消えます。</div>
+  </details>
+
+  <details>
+    <summary>トリガー</summary>
+    <label class="row">ネガティブ到達数の閾値 <span class="val" id="thresholdOut"></span></label>
+    <input type="range" id="threshold" min="1" max="200" step="1" value="20">
+
+    <div class="gauge"><div id="gaugeFill"></div></div>
+    <div class="counts" style="margin-bottom:8px">
+      <span>到達ネガ <b id="gaugeLabel">0 / 20</b></span>
+    </div>
+
+    <label class="row">映像ファイル</label>
+    <input type="file" id="videoFile" accept="video/*">
+    <div class="mname" id="videoName">未選択</div>
+
+    <label class="row">音声ファイル</label>
+    <input type="file" id="audioFile" accept="audio/*">
+    <div class="mname" id="audioName">未選択</div>
+
+    <label class="check"><input type="checkbox" id="autoReset" checked> 再生後にカウンタと堆積をリセット</label>
+    <div class="btns" style="margin-top:8px"><button id="btnTest">トリガーをテスト再生</button></div>
+  </details>
+
+  <details open>
+    <summary>状況</summary>
+    <div class="counts">
+      <span class="neg">到達ネガ <b id="cNeg">0</b></span>
+      <span class="neg">生成ネガ <b id="cNegTotal">0</b></span>
+      <span class="pos">ポジ <b id="cPos">0</b></span>
+      <span class="neu">中立 <b id="cNeu">0</b></span>
+      <span>落下中 <b id="cAir">0</b></span>
+      <span>堆積 <b id="cPile">0</b></span>
+    </div>
+    <div class="status err" id="status">スクリプトが実行されていません。Brave のシールド（ライオンのアイコン）で「スクリプトをブロック」が有効になっていないか確認してください。</div>
+    <noscript><div class="status err">JavaScript が無効です。</div></noscript>
+  </details>
+
+  <div class="btns actions">
+    <button id="btnStart" class="primary">開始</button>
+    <button id="btnClear">堆積をクリア</button>
+    <button id="btnReset">全リセット</button>
+  </div>
+</div>
+
+<div id="overlay" hidden>
+  <video id="trigVideo" playsinline></video>
+  <audio id="trigAudio"></audio>
+  <div class="hint" id="overlayHint">クリック / Esc で閉じる</div>
+</div>
+
+<script src="sentiment.js?v=2"></script>
+<script src="wordsource.js?v=2"></script>
+<script src="app.js?v=2"></script>
+</body>
+</html>
