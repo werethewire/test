@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""Send a synthetic walking/waving figure to the plugin, with no camera.
+
+Useful for checking the plugin is receiving and for dialling in looks before a
+show. Uses only the standard library.
+
+    python3 send_test_pose.py --port 9010
+"""
+
+from __future__ import annotations
+
+import argparse
+import math
+import time
+
+from pose_osc import (
+    FLOATS_PER_LANDMARK,
+    NUM_LANDMARKS,
+    DEFAULT_PORT,
+    OscSender,
+    build_clear_message,
+    build_pose_message,
+    parse_targets,
+)
+
+# Rest pose in normalised camera coordinates (origin top-left).
+BASE = {
+    0: (0.50, 0.14),   # nose
+    7: (0.46, 0.15), 8: (0.54, 0.15),
+    11: (0.42, 0.30), 12: (0.58, 0.30),
+    13: (0.32, 0.42), 14: (0.68, 0.42),
+    15: (0.26, 0.55), 16: (0.74, 0.55),
+    23: (0.45, 0.58), 24: (0.55, 0.58),
+    25: (0.44, 0.76), 26: (0.56, 0.76),
+    27: (0.43, 0.93), 28: (0.57, 0.93),
+    31: (0.40, 0.97), 32: (0.60, 0.97),
+}
+
+
+def synth_pose(t: float, motion: float) -> list:
+    """A simple wave + weight shift, enough to see motion inheritance work."""
+    values = [0.0] * (NUM_LANDMARKS * FLOATS_PER_LANDMARK)
+    swing = math.sin(t * 2.4) * 0.16 * motion
+    bob = math.sin(t * 4.8) * 0.02 * motion
+    sway = math.sin(t * 1.1) * 0.05 * motion
+
+    for index in range(NUM_LANDMARKS):
+        x, y = BASE.get(index, (0.5, 0.5))
+        visibility = 1.0 if index in BASE else 0.0
+
+        x += sway
+        y += bob
+        if index in (13, 15):        # left arm swings up
+            y -= abs(swing) * 1.6
+            x -= swing * 0.5
+        if index in (14, 16):        # right arm swings the other way
+            y += swing * 0.8
+            x += swing * 0.5
+        if index in (25, 27, 31):
+            x += swing * 0.25
+        if index in (26, 28, 32):
+            x -= swing * 0.25
+
+        base = index * FLOATS_PER_LANDMARK
+        values[base + 0] = min(max(x, 0.0), 1.0)
+        values[base + 1] = min(max(y, 0.0), 1.0)
+        values[base + 2] = 0.0
+        values[base + 3] = visibility
+    return values
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--target", action="append", default=[],
+                        metavar="HOST:PORT")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--fps", type=float, default=60.0)
+    parser.add_argument("--motion", type=float, default=1.0,
+                        help="0 = a still figure, 1 = normal, 2 = frantic")
+    parser.add_argument("--gap", type=float, default=0.0,
+                        help="seconds of /mp/clear every 5 s, to test fade out")
+    args = parser.parse_args()
+
+    targets = parse_targets(args.target, args.port)
+    sender = OscSender(targets)
+    print("sending synthetic pose to " + ", ".join(f"{h}:{p}" for h, p in targets))
+    print("ctrl-c to stop")
+
+    period = 1.0 / max(args.fps, 1.0)
+    started = time.perf_counter()
+    frame = 0
+    try:
+        while True:
+            now = time.perf_counter()
+            t = now - started
+            frame += 1
+            in_gap = args.gap > 0.0 and (t % 5.0) < args.gap
+            if in_gap:
+                sender.send(build_clear_message(frame))
+            else:
+                sender.send(build_pose_message(frame, synth_pose(t, args.motion)))
+            sleep_for = period - (time.perf_counter() - now)
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        sender.send(build_clear_message(frame + 1))
+        sender.close()
+        print()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

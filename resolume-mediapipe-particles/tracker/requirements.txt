@@ -1,0 +1,3 @@
+# send_test_pose.py needs none of these; pose_osc.py needs both.
+opencv-python>=4.8
+mediapipe>=0.10.9
