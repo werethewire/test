@@ -106,9 +106,15 @@ uniform float uSizeVar;
 uniform float uPresence;
 uniform int uEmitMode;
 uniform int uHasEmitters;
-uniform vec4 uJoint[ LANDMARK_COUNT ];
-uniform float uJointVis[ LANDMARK_COUNT ];
-uniform float uBoneCdf[ BONE_COUNT ];
+// Joint arrays hold every body back to back: body p owns the LANDMARK_COUNT
+// entries starting at p * LANDMARK_COUNT.
+uniform vec4 uJoint[ JOINT_COUNT ];
+uniform float uJointVis[ JOINT_COUNT ];
+uniform float uJointZ[ JOINT_COUNT ];
+uniform float uBodyPresence[ PERSON_COUNT ];
+// One cumulative table across all bodies, so the particle budget is split by
+// bone length rather than per person.
+uniform float uBoneCdf[ CDF_COUNT ];
 
 const ivec2 kBone[ BONE_COUNT ] = BONE_TABLE;
 
@@ -117,25 +123,29 @@ float rnd( float k )
 	return hash31( vec3( vUv * 917.0, uRandomSeed + k ) );
 }
 
-vec2 sampleSkeleton( float r, float t, out vec2 jointVel )
+vec2 sampleSkeleton( float r, float t, out vec2 jointVel, out float depth )
 {
-	int idx = BONE_COUNT - 1;
-	for( int i = 0; i < BONE_COUNT; ++i )
+	int slot = CDF_COUNT - 1;
+	for( int i = 0; i < CDF_COUNT; ++i )
 	{
 		if( r <= uBoneCdf[ i ] )
 		{
-			idx = i;
+			slot = i;
 			break;
 		}
 	}
-	ivec2 b = kBone[ idx ];
-	vec4 A  = uJoint[ b.x ];
-	vec4 B  = uJoint[ b.y ];
+	int person = slot / BONE_COUNT;
+	ivec2 b    = kBone[ slot - person * BONE_COUNT ];
+	int ia     = person * LANDMARK_COUNT + b.x;
+	int ib     = person * LANDMARK_COUNT + b.y;
+
 	// "Joints" mode snaps to whichever end of the bone is nearer.
 	if( uEmitMode == 3 )
 		t = t < 0.5 ? 0.0 : 1.0;
-	jointVel = mix( A.zw, B.zw, t );
-	return mix( A.xy, B.xy, t );
+
+	jointVel = mix( uJoint[ ia ].zw, uJoint[ ib ].zw, t );
+	depth    = mix( uJointZ[ ia ], uJointZ[ ib ], t );
+	return mix( uJoint[ ia ].xy, uJoint[ ib ].xy, t );
 }
 
 // Pull toward (or push away from) the closest point on the skeleton.
@@ -143,17 +153,26 @@ vec2 bodyForce( vec2 p )
 {
 	vec2 best   = p;
 	float bestD = 1e9;
-	for( int i = 0; i < BONE_COUNT; ++i )
+	for( int person = 0; person < PERSON_COUNT; ++person )
 	{
-		ivec2 b = kBone[ i ];
-		if( min( uJointVis[ b.x ], uJointVis[ b.y ] ) < 0.35 )
+		// Skip bodies that are not on screen; this is the hot loop.
+		if( uBodyPresence[ person ] < 0.01 )
 			continue;
-		vec2 c  = closestPointOnSegment( p, uJoint[ b.x ].xy, uJoint[ b.y ].xy );
-		float d = distance( p, c );
-		if( d < bestD )
+		int base = person * LANDMARK_COUNT;
+		for( int i = 0; i < BONE_COUNT; ++i )
 		{
-			bestD = d;
-			best  = c;
+			ivec2 b = kBone[ i ];
+			int ia  = base + b.x;
+			int ib  = base + b.y;
+			if( min( uJointVis[ ia ], uJointVis[ ib ] ) < 0.35 )
+				continue;
+			vec2 c  = closestPointOnSegment( p, uJoint[ ia ].xy, uJoint[ ib ].xy );
+			float d = distance( p, c );
+			if( d < bestD )
+			{
+				bestD = d;
+				best  = c;
+			}
 		}
 	}
 	if( bestD > 1.5 || bestD < 1e-5 )
@@ -169,7 +188,7 @@ void main()
 
 	vec2 pos      = P.xy;
 	float life    = P.z;
-	float seed    = P.w;
+	float depth   = P.w;
 	vec2 vel      = V.xy;
 	float lifespan = max( V.z, 0.001 );
 	float sizeRand = V.w;
@@ -184,19 +203,22 @@ void main()
 		if( uHasEmitters == 0 || uPresence <= 0.001 || rnd( 11.7 ) > chance )
 		{
 			// Park it well outside the viewport until it is allowed to spawn.
-			outPos = vec4( 10.0, 10.0, 0.0, seed );
+			outPos = vec4( 10.0, 10.0, 0.0, depth );
 			outVel = vec4( 0.0, 0.0, lifespan, sizeRand );
 			return;
 		}
 
 		vec2 jointVel;
-		vec2 spawn = sampleSkeleton( rnd( 1.3 ), rnd( 2.7 ), jointVel );
+		float spawnDepth;
+		vec2 spawn = sampleSkeleton( rnd( 1.3 ), rnd( 2.7 ), jointVel, spawnDepth );
 
 		float ang  = rnd( 3.1 ) * 6.2831853;
 		vec2 dir   = vec2( cos( ang ), sin( ang ) );
 		float mag  = rnd( 4.9 );
 
-		outPos = vec4( spawn + dir * uEmitRadius * mag, 1.0, rnd( 5.5 ) );
+		// Depth is fixed at birth: a particle belongs to the part of the body
+		// it came off, and re-sampling it each frame would make it swim.
+		outPos = vec4( spawn + dir * uEmitRadius * mag, 1.0, spawnDepth );
 		outVel = vec4( jointVel * uInherit + dir * uSpread * mag,
 					   uLife * mix( 1.0 - uLifeVar, 1.0 + uLifeVar, rnd( 6.2 ) ),
 					   rnd( 7.4 ) );
@@ -212,7 +234,7 @@ void main()
 	vel *= exp( -uDrag * uDt );
 	pos += vel * uDt;
 
-	outPos = vec4( pos, life, seed );
+	outPos = vec4( pos, life, depth );
 	outVel = vec4( vel, lifespan, sizeRand );
 }
 )GLSL";
@@ -228,6 +250,7 @@ uniform vec3 uColorA;
 uniform vec3 uColorB;
 uniform int uColorMode;
 uniform float uSpeedScale;
+uniform float uDepth;
 
 out vec4 vColor;
 
@@ -251,12 +274,18 @@ void main()
 	float age = 1.0 - life;
 	float env = smoothstep( 0.0, 0.12, age ) * smoothstep( 0.0, 0.55, life );
 
+	// MediaPipe's z is negative toward the camera, so a near particle gets a
+	// perspective factor above 1. uDepth == 0 disables this entirely.
+	float persp = clamp( 1.0 - P.w * uDepth, 0.25, 4.0 );
+
 	float sizeRand = mix( 1.0 - uSizeVar, 1.0 + uSizeVar, V.w );
 	gl_Position    = vec4( P.xy, 0.0, 1.0 );
-	gl_PointSize   = max( uSize * sizeRand * ( 0.35 + 0.65 * env ), 1.0 );
+	gl_PointSize   = max( uSize * sizeRand * ( 0.35 + 0.65 * env ) * persp, 1.0 );
 
 	float t = uColorMode == 1 ? clamp( length( V.xy ) * uSpeedScale, 0.0, 1.0 ) : age;
-	vColor  = vec4( mix( uColorA, uColorB, t ), env );
+	// Half the depth cue goes into intensity so near particles read as closer
+	// rather than merely fatter.
+	vColor  = vec4( mix( uColorA, uColorB, t ), env * mix( 1.0, persp, 0.5 ) );
 }
 )GLSL";
 
@@ -427,7 +456,7 @@ bool ParticleSystem::Init()
 	// intentionally has no attributes -- core profile still requires one.
 	glGenVertexArrays( 1, &pointVao );
 
-	if( !AllocSimTargets() )
+	if( !AllocSimTargets( false ) )
 		return false;
 
 	initialised = true;
@@ -438,8 +467,11 @@ bool ParticleSystem::Init()
 bool ParticleSystem::BuildShaders()
 {
 	std::string simFragment = std::string( "#version 410 core\n" ) + kNoiseLib + kSimFragmentBody;
-	ReplaceAll( simFragment, "LANDMARK_COUNT", std::to_string( NUM_LANDMARKS ) );
 	ReplaceAll( simFragment, "BONE_TABLE", BoneTableGlsl() );
+	ReplaceAll( simFragment, "JOINT_COUNT", std::to_string( NUM_LANDMARKS * MAX_PERSONS ) );
+	ReplaceAll( simFragment, "CDF_COUNT", std::to_string( NUM_BONES * MAX_PERSONS ) );
+	ReplaceAll( simFragment, "LANDMARK_COUNT", std::to_string( NUM_LANDMARKS ) );
+	ReplaceAll( simFragment, "PERSON_COUNT", std::to_string( MAX_PERSONS ) );
 	ReplaceAll( simFragment, "BONE_COUNT", std::to_string( NUM_BONES ) );
 
 	simProgram = LinkProgram( kQuadVertex, simFragment );
@@ -469,6 +501,7 @@ void ParticleSystem::ReleaseSimTargets()
 	simFbo[ 0 ] = simFbo[ 1 ] = 0;
 	posTex[ 0 ] = posTex[ 1 ] = 0;
 	velTex[ 0 ] = velTex[ 1 ] = 0;
+	allocatedSize = 0;
 }
 
 void ParticleSystem::ReleaseAccumTarget()
@@ -508,13 +541,33 @@ void ParticleSystem::DeInit()
 	initialised = false;
 }
 
-bool ParticleSystem::AllocSimTargets()
+bool ParticleSystem::AllocSimTargets( bool preserve )
 {
-	ReleaseSimTargets();
+	// Hold on to the old targets until the new ones are ready, so the live
+	// state can be copied across instead of every particle restarting.
+	GLuint oldPos[ 2 ]  = { posTex[ 0 ], posTex[ 1 ] };
+	GLuint oldVel[ 2 ]  = { velTex[ 0 ], velTex[ 1 ] };
+	GLuint oldFbo[ 2 ]  = { simFbo[ 0 ], simFbo[ 1 ] };
+	const int oldSize   = allocatedSize;
+	const int oldWrite  = writeIndex;
+	const bool canCopy  = preserve && oldSize > 0 && oldFbo[ 0 ] != 0;
+
+	posTex[ 0 ] = posTex[ 1 ] = 0;
+	velTex[ 0 ] = velTex[ 1 ] = 0;
+	simFbo[ 0 ] = simFbo[ 1 ] = 0;
 
 	glGenTextures( 2, posTex );
 	glGenTextures( 2, velTex );
 	glGenFramebuffers( 2, simFbo );
+
+	auto dropOld = [ & ]() {
+		if( oldFbo[ 0 ] != 0 )
+			glDeleteFramebuffers( 2, oldFbo );
+		if( oldPos[ 0 ] != 0 )
+			glDeleteTextures( 2, oldPos );
+		if( oldVel[ 0 ] != 0 )
+			glDeleteTextures( 2, oldVel );
+	};
 
 	for( int i = 0; i < 2; ++i )
 	{
@@ -538,14 +591,40 @@ bool ParticleSystem::AllocSimTargets()
 			std::fprintf( stderr, "[MediaPipeParticles] simulation FBO incomplete\n" );
 			glBindFramebuffer( GL_FRAMEBUFFER, 0 );
 			glBindTexture( GL_TEXTURE_2D, 0 );
+			dropOld();
 			return false;
 		}
 	}
 
 	glBindFramebuffer( GL_FRAMEBUFFER, 0 );
 	glBindTexture( GL_TEXTURE_2D, 0 );
-	writeIndex = 0;
-	needsSeed  = true;
+	writeIndex    = 0;
+	allocatedSize = texSize;
+	needsSeed     = true;
+
+	if( canCopy )
+	{
+		// Everything starts dead, then the overlapping square is copied in;
+		// texels outside it simply spawn fresh on the next step.
+		SeedParticles();
+
+		const GLint copy = GLint( std::min( oldSize, texSize ) );
+		glBindFramebuffer( GL_READ_FRAMEBUFFER, oldFbo[ oldWrite ] );
+		glBindFramebuffer( GL_DRAW_FRAMEBUFFER, simFbo[ 0 ] );
+		for( int attachment = 0; attachment < 2; ++attachment )
+		{
+			GLenum slot = GLenum( GL_COLOR_ATTACHMENT0 + attachment );
+			glReadBuffer( slot );
+			glDrawBuffers( 1, &slot );
+			glBlitFramebuffer( 0, 0, copy, copy, 0, 0, copy, copy,
+							   GL_COLOR_BUFFER_BIT, GL_NEAREST );
+		}
+		glBindFramebuffer( GL_READ_FRAMEBUFFER, 0 );
+		glBindFramebuffer( GL_DRAW_FRAMEBUFFER, 0 );
+		needsSeed = false;
+	}
+
+	dropOld();
 	return true;
 }
 
@@ -592,15 +671,14 @@ bool ParticleSystem::SetTextureSize( int size )
 	size = ( size / 16 ) * 16;
 	size = std::max( kMinTexSize, size );
 
-	pendingSize = size;
-	if( !initialised || size == texSize )
+	if( !initialised || size == allocatedSize )
 	{
 		texSize = size;
 		return true;
 	}
 
 	texSize = size;
-	return AllocSimTargets();
+	return AllocSimTargets( true );
 }
 
 void ParticleSystem::SeedParticles()
@@ -698,21 +776,33 @@ void ParticleSystem::DrawFrame( const PoseTracker& pose,
 	SetUniform1i( simProgram, "uEmitMode", params.emitMode );
 	SetUniform1i( simProgram, "uHasEmitters", pose.HasEmitters() ? 1 : 0 );
 
-	// Joint uniforms: xy position, zw velocity.
-	float jointData[ NUM_LANDMARKS * 4 ];
-	float visData[ NUM_LANDMARKS ];
-	const JointState* joints = pose.Joints();
-	for( int i = 0; i < NUM_LANDMARKS; ++i )
+	// Joint uniforms, every body back to back: xy position, zw velocity.
+	const int jointCount = NUM_LANDMARKS * MAX_PERSONS;
+	float jointData[ NUM_LANDMARKS * MAX_PERSONS * 4 ];
+	float visData[ NUM_LANDMARKS * MAX_PERSONS ];
+	float depthData[ NUM_LANDMARKS * MAX_PERSONS ];
+	float presenceData[ MAX_PERSONS ];
+	for( int person = 0; person < MAX_PERSONS; ++person )
 	{
-		jointData[ i * 4 + 0 ] = joints[ i ].x;
-		jointData[ i * 4 + 1 ] = joints[ i ].y;
-		jointData[ i * 4 + 2 ] = joints[ i ].vx;
-		jointData[ i * 4 + 3 ] = joints[ i ].vy;
-		visData[ i ]           = joints[ i ].vis;
+		const JointState* joints = pose.Joints( person );
+		presenceData[ person ]   = pose.Presence( person );
+		for( int i = 0; i < NUM_LANDMARKS; ++i )
+		{
+			const int slot             = person * NUM_LANDMARKS + i;
+			jointData[ slot * 4 + 0 ]  = joints[ i ].x;
+			jointData[ slot * 4 + 1 ]  = joints[ i ].y;
+			jointData[ slot * 4 + 2 ]  = joints[ i ].vx;
+			jointData[ slot * 4 + 3 ]  = joints[ i ].vy;
+			visData[ slot ]            = joints[ i ].vis;
+			depthData[ slot ]          = joints[ i ].z;
+		}
 	}
-	glUniform4fv( glGetUniformLocation( simProgram, "uJoint" ), NUM_LANDMARKS, jointData );
-	glUniform1fv( glGetUniformLocation( simProgram, "uJointVis" ), NUM_LANDMARKS, visData );
-	glUniform1fv( glGetUniformLocation( simProgram, "uBoneCdf" ), NUM_BONES, pose.BoneCdf() );
+	glUniform4fv( glGetUniformLocation( simProgram, "uJoint" ), jointCount, jointData );
+	glUniform1fv( glGetUniformLocation( simProgram, "uJointVis" ), jointCount, visData );
+	glUniform1fv( glGetUniformLocation( simProgram, "uJointZ" ), jointCount, depthData );
+	glUniform1fv( glGetUniformLocation( simProgram, "uBodyPresence" ), MAX_PERSONS, presenceData );
+	glUniform1fv( glGetUniformLocation( simProgram, "uBoneCdf" ),
+				  PoseTracker::BoneCdfCount(), pose.BoneCdf() );
 
 	DrawFullscreenQuad();
 
@@ -762,6 +852,7 @@ void ParticleSystem::DrawFrame( const PoseTracker& pose,
 	SetUniform3f( pointProgram, "uColorB", params.colorB );
 	SetUniform1i( pointProgram, "uColorMode", params.colorMode );
 	SetUniform1f( pointProgram, "uSpeedScale", params.speedScale );
+	SetUniform1f( pointProgram, "uDepth", params.depth );
 	SetUniform1f( pointProgram, "uBrightness", params.brightness );
 
 	glBindVertexArray( pointVao );

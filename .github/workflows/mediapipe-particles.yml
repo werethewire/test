@@ -1,0 +1,134 @@
+name: MediaPipe Particles
+
+# The plugin's target platforms are Windows and macOS, neither of which is
+# available in the development sandbox, so CI is where those builds are
+# actually proven. Linux additionally runs the tests and the headless render
+# check against Mesa.
+
+on:
+  push:
+    paths:
+      - 'resolume-mediapipe-particles/**'
+      - '.github/workflows/mediapipe-particles.yml'
+  pull_request:
+    paths:
+      - 'resolume-mediapipe-particles/**'
+      - '.github/workflows/mediapipe-particles.yml'
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: resolume-mediapipe-particles
+
+jobs:
+  linux:
+    name: Linux (tests + headless render)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build and GL dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libglew-dev libegl1-mesa-dev libgl1-mesa-dri glslang-tools
+
+      - name: Configure
+        run: cmake -S plugin -B build -DCMAKE_BUILD_TYPE=Release -DMPP_BUILD_HEADLESS_TEST=ON
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Headless render check
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          ./build/mpp_headless
+          ./build/mpp_headless alt
+          ./build/mpp_headless two
+          ./build/mpp_headless resize
+
+      - name: Check the tracker imports and its CLI parses
+        run: |
+          python3 -m py_compile tracker/pose_osc.py tracker/send_test_pose.py
+          python3 tracker/pose_osc.py --help > /dev/null
+          python3 tracker/send_test_pose.py --help > /dev/null
+
+      - name: Upload the rendered frames
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: headless-frames
+          path: resolume-mediapipe-particles/*.ppm
+          if-no-files-found: ignore
+
+  windows:
+    name: Windows (x64 DLL)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GLEW
+        # The FFGL SDK links GLEW on every platform except macOS.
+        run: vcpkg install glew:x64-windows
+
+      - name: Configure
+        run: >
+          cmake -S plugin -B build -G "Visual Studio 17 2022" -A x64
+          -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake
+          -DVCPKG_TARGET_TRIPLET=x64-windows
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Unit tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Confirm the plugin exports plugMain
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Recurse -Filter MediaPipeParticles.dll build | Select-Object -First 1
+          if (-not $dll) { throw "MediaPipeParticles.dll was not produced" }
+          Write-Host "built $($dll.FullName)"
+          $dumpbin = Get-ChildItem -Recurse -Filter dumpbin.exe `
+            "C:/Program Files/Microsoft Visual Studio/2022" | Select-Object -First 1
+          if ($dumpbin) {
+            $exports = & $dumpbin.FullName /exports $dll.FullName
+            if ($exports -notmatch 'plugMain') { throw "plugMain is not exported" }
+            Write-Host "plugMain is exported"
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MediaPipeParticles-windows-x64
+          path: resolume-mediapipe-particles/build/**/MediaPipeParticles.dll
+
+  macos:
+    name: macOS (universal bundle)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S plugin -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Confirm the bundle is universal and exports plugMain
+        run: |
+          binary=build/MediaPipeParticles.bundle/Contents/MacOS/MediaPipeParticles
+          test -f "$binary" || { echo "bundle binary missing"; exit 1; }
+          lipo -info "$binary"
+          nm -gU "$binary" | grep -q '_plugMain' || { echo "plugMain is not exported"; exit 1; }
+          echo "plugMain is exported"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MediaPipeParticles-macos-universal
+          path: resolume-mediapipe-particles/build/MediaPipeParticles.bundle

@@ -6,7 +6,8 @@
 // simulation shader, so nothing is read back to the CPU and the particle count
 // is limited by texture size rather than by draw-call overhead.
 //
-//   position texture : xy = position (NDC), z = remaining life 0..1, w = seed
+//   position texture : xy = position (NDC), z = remaining life 0..1,
+//                      w = depth sampled from the skeleton at birth
 //   velocity texture : xy = velocity, z = lifespan seconds, w = size random
 //
 #include "GLInclude.h"
@@ -35,6 +36,7 @@ struct ParticleParams
 	int colorMode      = 0;///< 0 = by age, 1 = by speed
 	float speedScale   = 1.0f;
 	int emitMode       = EMIT_WHOLE_BODY;///< must match the tracker's mode
+	float depth        = 1.0f;///< how strongly landmark z drives size and intensity
 };
 
 class ParticleSystem
@@ -43,8 +45,9 @@ public:
 	bool Init();
 	void DeInit();
 
-	/// Reallocates the simulation textures. `size` is clamped to [64, 512],
-	/// i.e. 4096 to 262144 particles. Existing particles are discarded.
+	/// Resizes the simulation textures. `size` is clamped to [64, 512], i.e.
+	/// 4096 to 262144 particles. Particles that fit in both the old and the
+	/// new texture keep their state, so the count can be ridden live.
 	bool SetTextureSize( int size );
 	int TextureSize() const { return texSize; }
 	int ParticleCount() const { return texSize * texSize; }
@@ -64,7 +67,9 @@ public:
 
 private:
 	bool BuildShaders();
-	bool AllocSimTargets();
+	/// `preserve` blits the live state into the new textures instead of
+	/// starting over.
+	bool AllocSimTargets( bool preserve );
 	bool AllocAccumTarget( int width, int height );
 	void ReleaseSimTargets();
 	void ReleaseAccumTarget();
@@ -78,7 +83,7 @@ private:
 	GLuint simFbo[ 2 ] = { 0, 0 };
 	int writeIndex     = 0;
 	int texSize        = 256;
-	int pendingSize    = 256;
+	int allocatedSize  = 0;///< size the current textures were created at
 	bool needsSeed     = true;
 
 	// rendering

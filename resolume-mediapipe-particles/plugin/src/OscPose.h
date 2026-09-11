@@ -15,21 +15,40 @@
 
 namespace mpp
 {
-/// One camera frame worth of landmarks, straight off the wire (unfiltered).
+/// One camera frame worth of landmarks for one body, straight off the wire.
 struct PoseFrame
 {
-	int32_t frameId = 0;
-	bool present    = false;///< false when the tracker reported /mp/clear
+	int32_t frameId  = 0;
+	int32_t personId = 0;
+	bool present     = false;///< false when the tracker reported /mp/clear
 	float lm[ POSE_FLOAT_COUNT ] = { 0.0f };
 };
 
-/// Parses a single UDP datagram. Returns true when it contained a pose or a
-/// clear message, in which case `out` holds the last one found in the packet.
-/// Exposed (rather than hidden in the receive loop) so it can be unit tested.
-bool ParsePosePacket( const char* data, size_t len, PoseFrame& out );
+/// What one packet (or one poll) carries: at most one update per body.
+struct PoseUpdate
+{
+	PoseFrame frames[ MAX_PERSONS ];
+	bool fresh[ MAX_PERSONS ] = { false };
 
-/// Background UDP listener. Keeps only the most recent frame -- if the render
-/// thread is slower than the camera, dropping intermediate poses is correct.
+	bool AnyFresh() const
+	{
+		for( int i = 0; i < MAX_PERSONS; ++i )
+		{
+			if( fresh[ i ] )
+				return true;
+		}
+		return false;
+	}
+};
+
+/// Parses a single UDP datagram, merging every pose/clear message it contains
+/// into `out` by person. Returns true when at least one was understood.
+/// Exposed (rather than hidden in the receive loop) so it can be unit tested.
+bool ParsePosePacket( const char* data, size_t len, PoseUpdate& out );
+
+/// Background UDP listener. Keeps only the most recent frame per body -- if
+/// the render thread is slower than the camera, dropping intermediate poses is
+/// correct.
 class PoseReceiver
 {
 public:
@@ -47,10 +66,10 @@ public:
 	bool IsListening() const { return listening.load( std::memory_order_relaxed ); }
 	uint16_t Port() const { return boundPort; }
 
-	/// Copies the newest frame out. Returns false when nothing arrived since
-	/// the previous call, so callers can keep extrapolating instead of
-	/// snapping back to a stale pose.
-	bool PollLatest( PoseFrame& out );
+	/// Copies whatever arrived since the previous call. Returns false when
+	/// nothing did, so callers can keep extrapolating instead of snapping back
+	/// to a stale pose.
+	bool PollLatest( PoseUpdate& out );
 
 	/// Total datagrams accepted since Start(), for the status readout.
 	uint64_t PacketCount() const { return packetCount.load( std::memory_order_relaxed ); }
@@ -61,8 +80,7 @@ private:
 
 	std::thread worker;
 	std::mutex frameMutex;
-	PoseFrame latest;
-	bool hasFresh = false;
+	PoseUpdate pending;
 
 	std::atomic< bool > running{ false };
 	std::atomic< bool > listening{ false };

@@ -103,27 +103,43 @@ static void PushFloat( std::vector< char >& out, float f )
 	PushInt32( out, int32_t( u ) );
 }
 
-/// Mirrors what tracker/pose_osc.py puts on the wire.
-static std::vector< char > MakePosePacket( int32_t frameId, const float* lm )
+/// Mirrors what tracker/pose_osc.py puts on the wire. A negative personId
+/// omits the argument entirely, which is what a single person tracker sends.
+static std::vector< char > MakePosePacket( int32_t frameId, const float* lm, int personId = -1 )
 {
 	std::vector< char > p;
 	PushString( p, "/mp/pose" );
-	std::string tags = ",i";
+	std::string tags = personId >= 0 ? ",ii" : ",i";
 	tags.append( mpp::POSE_FLOAT_COUNT, 'f' );
 	PushString( p, tags.c_str() );
 	PushInt32( p, frameId );
+	if( personId >= 0 )
+		PushInt32( p, personId );
 	for( int i = 0; i < mpp::POSE_FLOAT_COUNT; ++i )
 		PushFloat( p, lm[ i ] );
 	return p;
 }
 
-static std::vector< char > MakeClearPacket( int32_t frameId )
+static std::vector< char > MakeClearPacket( int32_t frameId, int personId = -1 )
 {
 	std::vector< char > p;
 	PushString( p, "/mp/clear" );
-	PushString( p, ",i" );
+	PushString( p, personId >= 0 ? ",ii" : ",i" );
 	PushInt32( p, frameId );
+	if( personId >= 0 )
+		PushInt32( p, personId );
 	return p;
+}
+
+/// Wraps one body's frame into the update the tracker consumes.
+static mpp::PoseUpdate SingleBody( const float* lm, bool present = true, int person = 0 )
+{
+	mpp::PoseUpdate update;
+	update.frames[ person ].present = present;
+	if( lm != nullptr )
+		std::memcpy( update.frames[ person ].lm, lm, sizeof( float ) * mpp::POSE_FLOAT_COUNT );
+	update.fresh[ person ] = true;
+	return update;
 }
 
 static std::vector< char > MakeBundle( const std::vector< std::vector< char > >& elems )
@@ -141,13 +157,13 @@ static std::vector< char > MakeBundle( const std::vector< std::vector< char > >&
 }
 
 /// A crude T-pose so the bone table has non-zero lengths.
-static void FillTPose( float* lm, float shiftX = 0.0f )
+static void FillTPose( float* lm, float shiftX = 0.0f, float depth = 0.0f )
 {
 	for( int i = 0; i < mpp::NUM_LANDMARKS; ++i )
 	{
 		lm[ i * 4 + 0 ] = 0.5f + shiftX;
 		lm[ i * 4 + 1 ] = 0.5f;
-		lm[ i * 4 + 2 ] = 0.0f;
+		lm[ i * 4 + 2 ] = depth;
 		lm[ i * 4 + 3 ] = 1.0f;
 	}
 	auto set = [ & ]( int idx, float x, float y ) {
@@ -181,23 +197,65 @@ static void TestParsePose()
 	FillTPose( lm );
 	auto packet = MakePosePacket( 42, lm );
 
-	mpp::PoseFrame f;
-	CHECK( mpp::ParsePosePacket( packet.data(), packet.size(), f ) );
+	mpp::PoseUpdate u;
+	CHECK( mpp::ParsePosePacket( packet.data(), packet.size(), u ) );
+	CHECK( u.fresh[ 0 ] );
+	const mpp::PoseFrame& f = u.frames[ 0 ];
 	CHECK( f.present );
 	CHECK( f.frameId == 42 );
+	CHECK( f.personId == 0 );// omitted personId means body 0
 	CHECK_NEAR( f.lm[ mpp::LM_LEFT_WRIST * 4 + 0 ], 0.18f, 1e-6 );
 	CHECK_NEAR( f.lm[ mpp::LM_RIGHT_ANKLE * 4 + 1 ], 0.93f, 1e-6 );
 	CHECK_NEAR( f.lm[ mpp::LM_NOSE * 4 + 3 ], 1.0f, 1e-6 );
+	for( int i = 1; i < mpp::MAX_PERSONS; ++i )
+		CHECK( !u.fresh[ i ] );
+}
+
+static void TestParsePosePerPerson()
+{
+	float a[ mpp::POSE_FLOAT_COUNT ];
+	float b[ mpp::POSE_FLOAT_COUNT ];
+	FillTPose( a, -0.2f );
+	FillTPose( b, 0.2f );
+
+	// Two bodies in one bundle, as the multi-person tracker sends them.
+	auto packet = MakeBundle( { MakePosePacket( 5, a, 0 ), MakePosePacket( 5, b, 1 ) } );
+	mpp::PoseUpdate u;
+	CHECK( mpp::ParsePosePacket( packet.data(), packet.size(), u ) );
+	CHECK( u.fresh[ 0 ] );
+	CHECK( u.fresh[ 1 ] );
+	CHECK( u.frames[ 0 ].personId == 0 );
+	CHECK( u.frames[ 1 ].personId == 1 );
+	CHECK_NEAR( u.frames[ 0 ].lm[ mpp::LM_NOSE * 4 + 0 ], 0.30f, 1e-6 );
+	CHECK_NEAR( u.frames[ 1 ].lm[ mpp::LM_NOSE * 4 + 0 ], 0.70f, 1e-6 );
+
+	// A body beyond MAX_PERSONS is dropped, not wrapped onto someone else.
+	auto overflow = MakePosePacket( 6, a, mpp::MAX_PERSONS );
+	mpp::PoseUpdate spill;
+	CHECK( !mpp::ParsePosePacket( overflow.data(), overflow.size(), spill ) );
+	CHECK( !spill.AnyFresh() );
 }
 
 static void TestParseClear()
 {
-	auto packet = MakeClearPacket( 7 );
-	mpp::PoseFrame f;
-	f.present = true;
-	CHECK( mpp::ParsePosePacket( packet.data(), packet.size(), f ) );
-	CHECK( !f.present );
-	CHECK( f.frameId == 7 );
+	// A bare clear retires every body at once.
+	auto all = MakeClearPacket( 7 );
+	mpp::PoseUpdate u;
+	CHECK( mpp::ParsePosePacket( all.data(), all.size(), u ) );
+	for( int i = 0; i < mpp::MAX_PERSONS; ++i )
+	{
+		CHECK( u.fresh[ i ] );
+		CHECK( !u.frames[ i ].present );
+		CHECK( u.frames[ i ].frameId == 7 );
+	}
+
+	// A targeted clear only touches that body.
+	mpp::PoseUpdate one;
+	auto single = MakeClearPacket( 8, 1 );
+	CHECK( mpp::ParsePosePacket( single.data(), single.size(), one ) );
+	CHECK( !one.fresh[ 0 ] );
+	CHECK( one.fresh[ 1 ] );
+	CHECK( !one.frames[ 1 ].present );
 }
 
 static void TestParseBundleTakesLast()
@@ -206,17 +264,18 @@ static void TestParseBundleTakesLast()
 	float b[ mpp::POSE_FLOAT_COUNT ];
 	FillTPose( a, 0.0f );
 	FillTPose( b, 0.1f );
+	// Same body twice in one bundle: the later message wins.
 	auto packet = MakeBundle( { MakePosePacket( 1, a ), MakePosePacket( 2, b ) } );
 
-	mpp::PoseFrame f;
-	CHECK( mpp::ParsePosePacket( packet.data(), packet.size(), f ) );
-	CHECK( f.frameId == 2 );
-	CHECK_NEAR( f.lm[ mpp::LM_NOSE * 4 + 0 ], 0.60f, 1e-6 );
+	mpp::PoseUpdate u;
+	CHECK( mpp::ParsePosePacket( packet.data(), packet.size(), u ) );
+	CHECK( u.frames[ 0 ].frameId == 2 );
+	CHECK_NEAR( u.frames[ 0 ].lm[ mpp::LM_NOSE * 4 + 0 ], 0.60f, 1e-6 );
 }
 
 static void TestRejectsGarbage()
 {
-	mpp::PoseFrame f;
+	mpp::PoseUpdate f;
 	CHECK( !mpp::ParsePosePacket( nullptr, 0, f ) );
 
 	const char junk[] = "not an osc packet at all";
@@ -284,9 +343,7 @@ static void TestTrackerMappingAndMirror()
 {
 	float lm[ mpp::POSE_FLOAT_COUNT ];
 	FillTPose( lm );
-	mpp::PoseFrame frame;
-	frame.present = true;
-	std::memcpy( frame.lm, lm, sizeof( lm ) );
+	mpp::PoseUpdate frame = SingleBody( lm );
 
 	mpp::PoseTracker t;
 	t.SetSmoothing( 0.0f );
@@ -318,9 +375,7 @@ static void TestEmissionTable()
 {
 	float lm[ mpp::POSE_FLOAT_COUNT ];
 	FillTPose( lm );
-	mpp::PoseFrame frame;
-	frame.present = true;
-	std::memcpy( frame.lm, lm, sizeof( lm ) );
+	mpp::PoseUpdate frame = SingleBody( lm );
 
 	mpp::PoseTracker t;
 	t.SetSmoothing( 0.0f );
@@ -330,8 +385,10 @@ static void TestEmissionTable()
 
 	CHECK( t.HasEmitters() );
 	const float* cdf = t.BoneCdf();
-	for( int i = 1; i < mpp::NUM_BONES; ++i )
+	for( int i = 1; i < mpp::PoseTracker::BoneCdfCount(); ++i )
 		CHECK( cdf[ i ] >= cdf[ i - 1 ] - 1e-6f );
+	CHECK_NEAR( cdf[ mpp::PoseTracker::BoneCdfCount() - 1 ], 1.0f, 1e-6 );
+	// Only body 0 is present, so its slice must own the whole table.
 	CHECK_NEAR( cdf[ mpp::NUM_BONES - 1 ], 1.0f, 1e-6 );
 
 	// Limb-only mode must leave every torso bone with zero width.
@@ -351,9 +408,9 @@ static void TestEmissionTable()
 	}
 
 	// An invisible skeleton must produce no emitters at all.
-	mpp::PoseFrame hidden = frame;
+	mpp::PoseUpdate hidden = frame;
 	for( int i = 0; i < mpp::NUM_LANDMARKS; ++i )
-		hidden.lm[ i * 4 + 3 ] = 0.0f;
+		hidden.frames[ 0 ].lm[ i * 4 + 3 ] = 0.0f;
 	mpp::PoseTracker none;
 	none.SetSmoothing( 0.0f );
 	for( int i = 0; i < 120; ++i )
@@ -365,9 +422,7 @@ static void TestPresenceEnvelope()
 {
 	float lm[ mpp::POSE_FLOAT_COUNT ];
 	FillTPose( lm );
-	mpp::PoseFrame frame;
-	frame.present = true;
-	std::memcpy( frame.lm, lm, sizeof( lm ) );
+	mpp::PoseUpdate frame = SingleBody( lm );
 
 	mpp::PoseTracker t;
 	t.SetTimeout( 0.5f );
@@ -389,8 +444,7 @@ static void TestPresenceEnvelope()
 	mpp::PoseTracker c;
 	for( int i = 0; i < 60; ++i )
 		c.Update( &frame, 1.0f / 60.0f );
-	mpp::PoseFrame clear;
-	clear.present = false;
+	mpp::PoseUpdate clear = SingleBody( nullptr, false );
 	for( int i = 0; i < 300; ++i )
 		c.Update( &clear, 1.0f / 60.0f );
 	CHECK( c.Presence() < 0.01f );
@@ -400,9 +454,7 @@ static void TestMotionEnergy()
 {
 	float lm[ mpp::POSE_FLOAT_COUNT ];
 	FillTPose( lm );
-	mpp::PoseFrame still;
-	still.present = true;
-	std::memcpy( still.lm, lm, sizeof( lm ) );
+	mpp::PoseUpdate still = SingleBody( lm );
 
 	mpp::PoseTracker rest;
 	for( int i = 0; i < 180; ++i )
@@ -415,9 +467,7 @@ static void TestMotionEnergy()
 		float wobble = ( i % 2 ) ? 0.12f : -0.12f;
 		float moving[ mpp::POSE_FLOAT_COUNT ];
 		FillTPose( moving, wobble );
-		mpp::PoseFrame f;
-		f.present = true;
-		std::memcpy( f.lm, moving, sizeof( moving ) );
+		mpp::PoseUpdate f = SingleBody( moving );
 		busy.Update( &f, 1.0f / 60.0f );
 	}
 	CHECK( busy.MotionEnergy() > rest.MotionEnergy() );
@@ -448,7 +498,7 @@ static void TestReceiverRoundTrip()
 
 	CHECK( SendUdpLoopback( port, packet.data(), packet.size() ) );
 
-	mpp::PoseFrame got;
+	mpp::PoseUpdate got;
 	bool received = false;
 	for( int i = 0; i < 200 && !received; ++i )
 	{
@@ -459,19 +509,173 @@ static void TestReceiverRoundTrip()
 	CHECK( received );
 	if( received )
 	{
-		CHECK( got.frameId == 99 );
-		CHECK( got.present );
+		CHECK( got.fresh[ 0 ] );
+		CHECK( got.frames[ 0 ].frameId == 99 );
+		CHECK( got.frames[ 0 ].present );
 		// A second poll with nothing new must report "no fresh frame".
-		mpp::PoseFrame again;
+		mpp::PoseUpdate again;
 		CHECK( !rx.PollLatest( again ) );
 	}
 	rx.Stop();
 	CHECK( !rx.IsListening() );
 }
 
+static void TestDepth()
+{
+	float lm[ mpp::POSE_FLOAT_COUNT ];
+	FillTPose( lm, 0.0f, -0.4f );// -0.4 == leaning toward the camera
+	mpp::PoseUpdate frame = SingleBody( lm );
+
+	mpp::PoseTracker t;
+	t.SetSmoothing( 0.0f );
+	t.SetTransform( 1.0f, 0.0f, 0.0f );
+	for( int i = 0; i < 120; ++i )
+		t.Update( &frame, 1.0f / 60.0f );
+
+	// z shares x's scale: raw * 2 * zoom, and carries no position offset.
+	CHECK_NEAR( t.Joints()[ mpp::LM_NOSE ].z, -0.8f, 0.02 );
+
+	mpp::PoseTracker zoomed;
+	zoomed.SetSmoothing( 0.0f );
+	zoomed.SetTransform( 0.5f, 0.7f, -0.3f );
+	for( int i = 0; i < 120; ++i )
+		zoomed.Update( &frame, 1.0f / 60.0f );
+	CHECK_NEAR( zoomed.Joints()[ mpp::LM_NOSE ].z, -0.4f, 0.02 );
+
+	// Mirroring flips x but must leave depth alone.
+	mpp::PoseTracker mirrored;
+	mirrored.SetSmoothing( 0.0f );
+	mirrored.SetMirror( true );
+	for( int i = 0; i < 120; ++i )
+		mirrored.Update( &frame, 1.0f / 60.0f );
+	CHECK_NEAR( mirrored.Joints()[ mpp::LM_NOSE ].z, -0.8f, 0.02 );
+
+	// Depth is filtered, so a one frame spike must not come through raw.
+	float spike[ mpp::POSE_FLOAT_COUNT ];
+	FillTPose( spike, 0.0f, -3.0f );
+	mpp::PoseUpdate jolt = SingleBody( spike );
+	t.Update( &jolt, 1.0f / 60.0f );
+	CHECK( t.Joints()[ mpp::LM_NOSE ].z > -3.0f );
+}
+
+static void TestMultipleBodies()
+{
+	float left[ mpp::POSE_FLOAT_COUNT ];
+	float right[ mpp::POSE_FLOAT_COUNT ];
+	FillTPose( left, -0.2f );
+	FillTPose( right, 0.2f );
+
+	mpp::PoseUpdate both;
+	both.frames[ 0 ].present = true;
+	std::memcpy( both.frames[ 0 ].lm, left, sizeof( left ) );
+	both.fresh[ 0 ] = true;
+	both.frames[ 1 ].present = true;
+	std::memcpy( both.frames[ 1 ].lm, right, sizeof( right ) );
+	both.fresh[ 1 ] = true;
+
+	mpp::PoseTracker t;
+	t.SetSmoothing( 0.0f );
+	t.SetMirror( false );
+	for( int i = 0; i < 180; ++i )
+		t.Update( &both, 1.0f / 60.0f );
+
+	CHECK( t.ActiveBodies() == 2 );
+	CHECK( t.Presence( 0 ) > 0.95f );
+	CHECK( t.Presence( 1 ) > 0.95f );
+	CHECK( t.Presence( 2 ) < 0.01f );
+
+	// The two bodies are at different x, and each reads back on its own slot.
+	CHECK_NEAR( t.Joints( 0 )[ mpp::LM_NOSE ].x, ( 0.30f * 2.0f - 1.0f ), 1e-4 );
+	CHECK_NEAR( t.Joints( 1 )[ mpp::LM_NOSE ].x, ( 0.70f * 2.0f - 1.0f ), 1e-4 );
+
+	// Identical bodies should split the emission budget roughly in half.
+	const float* cdf   = t.BoneCdf();
+	const float body0  = cdf[ mpp::NUM_BONES - 1 ];
+	const float body1  = cdf[ 2 * mpp::NUM_BONES - 1 ] - body0;
+	CHECK_NEAR( body0, 0.5f, 0.02 );
+	CHECK_NEAR( body1, 0.5f, 0.02 );
+	CHECK_NEAR( cdf[ mpp::PoseTracker::BoneCdfCount() - 1 ], 1.0f, 1e-6 );
+
+	// One body leaves: the other must take the whole budget back, and the
+	// global presence must stay pinned at 1 the entire time.
+	mpp::PoseUpdate onlyFirst;
+	onlyFirst.frames[ 0 ]  = both.frames[ 0 ];
+	onlyFirst.fresh[ 0 ]   = true;
+	onlyFirst.frames[ 1 ].present = false;
+	onlyFirst.fresh[ 1 ]   = true;
+	for( int i = 0; i < 300; ++i )
+	{
+		t.Update( &onlyFirst, 1.0f / 60.0f );
+		CHECK( t.Presence() > 0.95f );
+	}
+	CHECK( t.ActiveBodies() == 1 );
+	CHECK( t.Presence( 1 ) < 0.01f );
+	CHECK_NEAR( t.BoneCdf()[ mpp::NUM_BONES - 1 ], 1.0f, 1e-4 );
+}
+
+static void TestReceiverPerPerson()
+{
+	mpp::PoseReceiver rx;
+	uint16_t port = 0;
+	for( uint16_t candidate = 19060; candidate < 19110; ++candidate )
+	{
+		if( rx.Start( candidate ) )
+		{
+			port = candidate;
+			break;
+		}
+	}
+	if( port == 0 )
+	{
+		std::printf( "SKIP per-person receiver test (no bindable port)\n" );
+		return;
+	}
+
+	float a[ mpp::POSE_FLOAT_COUNT ];
+	float b[ mpp::POSE_FLOAT_COUNT ];
+	FillTPose( a, -0.1f );
+	FillTPose( b, 0.1f );
+
+	// Two bodies in two separate datagrams must both survive to one poll.
+	auto p0 = MakePosePacket( 1, a, 0 );
+	auto p1 = MakePosePacket( 1, b, 1 );
+	CHECK( SendUdpLoopback( port, p0.data(), p0.size() ) );
+	CHECK( SendUdpLoopback( port, p1.data(), p1.size() ) );
+
+	// The two datagrams may land in the same poll or in consecutive ones, so
+	// accumulate the way the plugin's tracker does.
+	mpp::PoseUpdate merged;
+	for( int i = 0; i < 200; ++i )
+	{
+		mpp::PoseUpdate poll;
+		if( rx.PollLatest( poll ) )
+		{
+			for( int person = 0; person < mpp::MAX_PERSONS; ++person )
+			{
+				if( !poll.fresh[ person ] )
+					continue;
+				merged.frames[ person ] = poll.frames[ person ];
+				merged.fresh[ person ]  = true;
+			}
+		}
+		if( merged.fresh[ 0 ] && merged.fresh[ 1 ] )
+			break;
+		std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+	}
+	CHECK( merged.fresh[ 0 ] );
+	CHECK( merged.fresh[ 1 ] );
+	if( merged.fresh[ 0 ] && merged.fresh[ 1 ] )
+	{
+		CHECK_NEAR( merged.frames[ 0 ].lm[ mpp::LM_NOSE * 4 + 0 ], 0.40f, 1e-6 );
+		CHECK_NEAR( merged.frames[ 1 ].lm[ mpp::LM_NOSE * 4 + 0 ], 0.60f, 1e-6 );
+	}
+	rx.Stop();
+}
+
 int main()
 {
 	TestParsePose();
+	TestParsePosePerPerson();
 	TestParseClear();
 	TestParseBundleTakesLast();
 	TestRejectsGarbage();
@@ -480,7 +684,10 @@ int main()
 	TestEmissionTable();
 	TestPresenceEnvelope();
 	TestMotionEnergy();
+	TestDepth();
+	TestMultipleBodies();
 	TestReceiverRoundTrip();
+	TestReceiverPerPerson();
 
 	if( failures == 0 )
 		std::printf( "all pose tests passed\n" );

@@ -39,6 +39,7 @@ const Range kRanges[ MediaPipeParticles::PARAM_LAST ] = {
 	/* ATTRACT     */ { -4.0f, 4.0f },
 	/* SIZE        */ { 0.5f, 24.0f },
 	/* SIZE_VAR    */ { 0.0f, 1.0f },
+	/* DEPTH       */ { 0.0f, 4.0f },
 	/* TRAILS      */ { 0.0f, 1.0f },
 	/* BRIGHTNESS  */ { 0.0f, 4.0f },
 	/* OPACITY     */ { 0.0f, 1.0f },
@@ -99,6 +100,7 @@ MediaPipeParticles::MediaPipeParticles()
 	raw[ PARAM_ATTRACT ]    = Normalised( PARAM_ATTRACT, 0.0f );
 	raw[ PARAM_SIZE ]       = Normalised( PARAM_SIZE, 3.0f );
 	raw[ PARAM_SIZE_VAR ]   = 0.5f;
+	raw[ PARAM_DEPTH ]      = Normalised( PARAM_DEPTH, 1.0f );
 	raw[ PARAM_TRAILS ]     = 0.0f;
 	raw[ PARAM_BRIGHTNESS ] = Normalised( PARAM_BRIGHTNESS, 1.0f );
 	raw[ PARAM_OPACITY ]    = 1.0f;
@@ -129,6 +131,7 @@ MediaPipeParticles::MediaPipeParticles()
 	SetParamInfo( PARAM_ATTRACT, "Body Attract", FF_TYPE_STANDARD, raw[ PARAM_ATTRACT ] );
 	SetParamInfo( PARAM_SIZE, "Size", FF_TYPE_STANDARD, raw[ PARAM_SIZE ] );
 	SetParamInfo( PARAM_SIZE_VAR, "Size Random", FF_TYPE_STANDARD, raw[ PARAM_SIZE_VAR ] );
+	SetParamInfo( PARAM_DEPTH, "Depth", FF_TYPE_STANDARD, raw[ PARAM_DEPTH ] );
 	SetParamInfo( PARAM_TRAILS, "Trails", FF_TYPE_STANDARD, raw[ PARAM_TRAILS ] );
 	SetParamInfo( PARAM_BRIGHTNESS, "Brightness", FF_TYPE_STANDARD, raw[ PARAM_BRIGHTNESS ] );
 	SetParamInfo( PARAM_OPACITY, "Opacity", FF_TYPE_STANDARD, raw[ PARAM_OPACITY ] );
@@ -223,6 +226,7 @@ mpp::ParticleParams MediaPipeParticles::BuildParticleParams() const
 	p.attract      = Mapped( raw, PARAM_ATTRACT );
 	p.pointSize    = Mapped( raw, PARAM_SIZE );
 	p.sizeVariance = Clamp01( raw[ PARAM_SIZE_VAR ] );
+	p.depth        = Mapped( raw, PARAM_DEPTH );
 	p.trails       = Clamp01( raw[ PARAM_TRAILS ] );
 	p.brightness   = Mapped( raw, PARAM_BRIGHTNESS );
 	p.opacity      = Clamp01( raw[ PARAM_OPACITY ] );
@@ -259,11 +263,11 @@ FFResult MediaPipeParticles::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 		portDirty = false;
 	}
 
-	mpp::PoseFrame frame;
-	const bool gotFrame = receiver.PollLatest( frame );
+	mpp::PoseUpdate update;
+	const bool gotFrames = receiver.PollLatest( update );
 
 	PushParamsToTracker();
-	tracker.Update( gotFrame ? &frame : nullptr, dt );
+	tracker.Update( gotFrames ? &update : nullptr, dt );
 
 	int wantedSize = int( Mapped( raw, PARAM_COUNT_ ) + 0.5f );
 	if( wantedSize != lastTexSize )

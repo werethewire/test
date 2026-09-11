@@ -15,6 +15,7 @@ import time
 
 from pose_osc import (
     FLOATS_PER_LANDMARK,
+    MAX_PERSONS,
     NUM_LANDMARKS,
     DEFAULT_PORT,
     OscSender,
@@ -37,7 +38,8 @@ BASE = {
 }
 
 
-def synth_pose(t: float, motion: float) -> list:
+def synth_pose(t: float, motion: float, shift_x: float = 0.0,
+               depth: float = 0.0, scale: float = 1.0) -> list:
     """A simple wave + weight shift, enough to see motion inheritance work."""
     values = [0.0] * (NUM_LANDMARKS * FLOATS_PER_LANDMARK)
     swing = math.sin(t * 2.4) * 0.16 * motion
@@ -48,6 +50,8 @@ def synth_pose(t: float, motion: float) -> list:
         x, y = BASE.get(index, (0.5, 0.5))
         visibility = 1.0 if index in BASE else 0.0
 
+        x = 0.5 + (x - 0.5) * scale
+        y = 0.5 + (y - 0.5) * scale
         x += sway
         y += bob
         if index in (13, 15):        # left arm swings up
@@ -62,11 +66,29 @@ def synth_pose(t: float, motion: float) -> list:
             x -= swing * 0.25
 
         base = index * FLOATS_PER_LANDMARK
-        values[base + 0] = min(max(x, 0.0), 1.0)
+        values[base + 0] = min(max(x + shift_x, 0.0), 1.0)
         values[base + 1] = min(max(y, 0.0), 1.0)
-        values[base + 2] = 0.0
+        values[base + 2] = depth
         values[base + 3] = visibility
     return values
+
+
+def figure_layout(count: int):
+    """Spread `count` figures across the frame at different depths.
+
+    The middle one is nearest, so the plugin's Depth parameter has something
+    obvious to act on.
+    """
+    if count == 1:
+        return [(0.0, 0.0, 1.0)]
+    layout = []
+    for i in range(count):
+        # Evenly spaced, with the depth alternating near/far.
+        shift = (i + 0.5) / count - 0.5
+        depth = -0.35 if i % 2 == 0 else 0.35
+        scale = 1.0 - 0.18 * abs(depth) / 0.35 * (1 if depth > 0 else -1)
+        layout.append((shift * 0.9, depth, scale))
+    return layout
 
 
 def main() -> int:
@@ -79,11 +101,16 @@ def main() -> int:
                         help="0 = a still figure, 1 = normal, 2 = frantic")
     parser.add_argument("--gap", type=float, default=0.0,
                         help="seconds of /mp/clear every 5 s, to test fade out")
+    parser.add_argument("--people", type=int, default=1,
+                        choices=range(1, MAX_PERSONS + 1), metavar=f"1-{MAX_PERSONS}",
+                        help="how many synthetic figures to send (default: 1)")
     args = parser.parse_args()
 
     targets = parse_targets(args.target, args.port)
     sender = OscSender(targets)
-    print("sending synthetic pose to " + ", ".join(f"{h}:{p}" for h, p in targets))
+    layout = figure_layout(args.people)
+    print(f"sending {args.people} synthetic figure(s) to "
+          + ", ".join(f"{h}:{p}" for h, p in targets))
     print("ctrl-c to stop")
 
     period = 1.0 / max(args.fps, 1.0)
@@ -98,7 +125,13 @@ def main() -> int:
             if in_gap:
                 sender.send(build_clear_message(frame))
             else:
-                sender.send(build_pose_message(frame, synth_pose(t, args.motion)))
+                for person_id, (shift, depth, scale) in enumerate(layout):
+                    # Offset each figure in time too, so they do not move as one.
+                    pose = synth_pose(t + person_id * 0.7, args.motion,
+                                      shift, depth, scale)
+                    sender.send(
+                        build_pose_message(frame, pose, person_id)
+                    )
             sleep_for = period - (time.perf_counter() - now)
             if sleep_for > 0:
                 time.sleep(sleep_for)

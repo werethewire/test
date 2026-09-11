@@ -68,9 +68,9 @@ struct Reader
 	}
 };
 
-bool ParseMessage( Reader r, PoseFrame& out );
+bool ParseMessage( Reader r, PoseUpdate& out );
 
-bool ParseElement( Reader r, PoseFrame& out )
+bool ParseElement( Reader r, PoseUpdate& out )
 {
 	if( r.Remaining() >= 8 && std::memcmp( r.p, "#bundle", 8 ) == 0 )
 	{
@@ -96,7 +96,7 @@ bool ParseElement( Reader r, PoseFrame& out )
 	return ParseMessage( r, out );
 }
 
-bool ParseMessage( Reader r, PoseFrame& out )
+bool ParseMessage( Reader r, PoseUpdate& out )
 {
 	const char* address = nullptr;
 	if( !r.ReadString( address ) )
@@ -116,7 +116,8 @@ bool ParseMessage( Reader r, PoseFrame& out )
 	parsed.present = isPose;
 
 	int floatsSeen = 0;
-	bool gotId     = false;
+	int intsSeen   = 0;
+	bool gotPerson = false;
 	for( const char* t = tags; *t != 0; ++t )
 	{
 		if( *t == 'i' )
@@ -124,11 +125,16 @@ bool ParseMessage( Reader r, PoseFrame& out )
 			int32_t v;
 			if( !r.ReadInt32( v ) )
 				return false;
-			if( !gotId )
-			{
+			// First int is the frame counter, second (optional) is the body.
+			// A single person tracker omits the second one.
+			if( intsSeen == 0 )
 				parsed.frameId = v;
-				gotId          = true;
+			else if( intsSeen == 1 )
+			{
+				parsed.personId = v;
+				gotPerson       = true;
 			}
+			++intsSeen;
 		}
 		else if( *t == 'f' )
 		{
@@ -150,12 +156,30 @@ bool ParseMessage( Reader r, PoseFrame& out )
 	if( isPose && floatsSeen < POSE_FLOAT_COUNT )
 		return false;// truncated pose, keep the previous one
 
-	out = parsed;
+	if( isClear && !gotPerson )
+	{
+		// A bare clear means the frame is empty: retire every body.
+		for( int i = 0; i < MAX_PERSONS; ++i )
+		{
+			out.frames[ i ]          = parsed;
+			out.frames[ i ].personId = i;
+			out.fresh[ i ]           = true;
+		}
+		return true;
+	}
+
+	// Bodies beyond what the plugin can draw are dropped here rather than
+	// wrapping onto somebody else's slot.
+	if( parsed.personId < 0 || parsed.personId >= MAX_PERSONS )
+		return false;
+
+	out.frames[ parsed.personId ] = parsed;
+	out.fresh[ parsed.personId ]  = true;
 	return true;
 }
 }// namespace
 
-bool ParsePosePacket( const char* data, size_t len, PoseFrame& out )
+bool ParsePosePacket( const char* data, size_t len, PoseUpdate& out )
 {
 	if( data == nullptr || len < 4 )
 		return false;
@@ -245,7 +269,7 @@ void PoseReceiver::Stop()
 	boundPort = 0;
 
 	std::lock_guard< std::mutex > lock( frameMutex );
-	hasFresh = false;
+	pending = PoseUpdate();
 }
 
 void PoseReceiver::ReceiveLoop()
@@ -262,24 +286,30 @@ void PoseReceiver::ReceiveLoop()
 		if( received <= 0 )
 			continue;// timeout or transient error
 
-		PoseFrame frame;
-		if( !ParsePosePacket( buffer, size_t( received ), frame ) )
+		PoseUpdate update;
+		if( !ParsePosePacket( buffer, size_t( received ), update ) )
 			continue;
 
 		packetCount.fetch_add( 1, std::memory_order_relaxed );
 		std::lock_guard< std::mutex > lock( frameMutex );
-		latest   = frame;
-		hasFresh = true;
+		for( int i = 0; i < MAX_PERSONS; ++i )
+		{
+			if( !update.fresh[ i ] )
+				continue;
+			pending.frames[ i ] = update.frames[ i ];
+			pending.fresh[ i ]  = true;
+		}
 	}
 }
 
-bool PoseReceiver::PollLatest( PoseFrame& out )
+bool PoseReceiver::PollLatest( PoseUpdate& out )
 {
 	std::lock_guard< std::mutex > lock( frameMutex );
-	if( !hasFresh )
+	if( !pending.AnyFresh() )
 		return false;
-	out      = latest;
-	hasFresh = false;
+	out = pending;
+	for( int i = 0; i < MAX_PERSONS; ++i )
+		pending.fresh[ i ] = false;
 	return true;
 }
 

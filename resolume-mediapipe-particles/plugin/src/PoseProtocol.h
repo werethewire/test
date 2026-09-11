@@ -2,12 +2,17 @@
 //
 // Wire format shared between the Python tracker and the FFGL plugin.
 //
-// The tracker sends one OSC message per camera frame over UDP:
+// The tracker sends one OSC message per detected body per camera frame:
 //
-//   /mp/pose  ,ifffffff...   frameId, then NUM_LANDMARKS * 4 floats
+//   /mp/pose  ,ii ffff...    frameId, personId, then NUM_LANDMARKS * 4 floats
 //                            (x, y, z, visibility) per landmark
 //
-//   /mp/clear ,i             frameId  -- no person in frame, fade out
+//   /mp/clear ,i             frameId            -- nobody in frame at all
+//   /mp/clear ,ii            frameId, personId  -- that body specifically left
+//
+// personId is optional for backwards compatibility: a message with a single
+// int argument is treated as person 0, which is what a single person tracker
+// sends.
 //
 // Coordinates are normalised: x/y in [0,1] with the origin at the top-left of
 // the camera image (MediaPipe convention). z is roughly in the same scale as x
@@ -23,6 +28,11 @@ static const int FLOATS_PER_LANDMARK = 4;
 static const int POSE_FLOAT_COUNT   = NUM_LANDMARKS * FLOATS_PER_LANDMARK;
 
 static const uint16_t DEFAULT_PORT = 9010;
+
+// How many simultaneous bodies the pipeline carries. Every extra body costs
+// 216 shader uniform components, and GL 4.1 only guarantees 1024 of them, so
+// this cannot grow much without switching the joint data to a texture.
+static const int MAX_PERSONS = 3;
 
 // MediaPipe Pose landmark indices we care about.
 enum Landmark : int
