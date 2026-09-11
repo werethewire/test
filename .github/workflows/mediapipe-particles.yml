@@ -24,6 +24,7 @@ jobs:
   linux:
     name: Linux (tests + headless render)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -67,6 +68,7 @@ jobs:
   windows:
     name: Windows (x64 DLL)
     runs-on: windows-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -96,12 +98,20 @@ jobs:
           $dll = Get-ChildItem -Recurse -Filter MediaPipeParticles.dll build | Select-Object -First 1
           if (-not $dll) { throw "MediaPipeParticles.dll was not produced" }
           Write-Host "built $($dll.FullName)"
-          $dumpbin = Get-ChildItem -Recurse -ErrorAction SilentlyContinue -Filter dumpbin.exe `
-            "C:/Program Files/Microsoft Visual Studio" | Select-Object -First 1
-          if (-not $dumpbin) { throw "dumpbin.exe not found, cannot verify the exports" }
+          # Ask vswhere where Visual Studio is rather than walking the whole
+          # install: a recursive search for dumpbin.exe there takes minutes.
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} `
+            "Microsoft Visual Studio/Installer/vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found" }
+          $vsRoot = & $vswhere -latest -products * -property installationPath
+          $toolsVersionFile = Join-Path $vsRoot "VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt"
+          $toolsVersion = (Get-Content $toolsVersionFile).Trim()
+          $dumpbin = Join-Path $vsRoot "VC/Tools/MSVC/$toolsVersion/bin/Hostx64/x64/dumpbin.exe"
+          if (-not (Test-Path $dumpbin)) { throw "dumpbin.exe not found at $dumpbin" }
+
           # Out-String matters: against an array, -notmatch filters elements
           # instead of returning a boolean, so the check would always "fail".
-          $exports = & $dumpbin.FullName /exports $dll.FullName | Out-String
+          $exports = & $dumpbin /exports $dll.FullName | Out-String
           Write-Host $exports
           if ($exports -notmatch 'plugMain') { throw "plugMain is not exported" }
           Write-Host "plugMain is exported"
@@ -114,6 +124,7 @@ jobs:
   macos:
     name: macOS (universal bundle)
     runs-on: macos-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
