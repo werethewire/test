@@ -50,7 +50,7 @@
 FFGL SDK は自動取得されます。既存のチェックアウトを使う場合は `-DFFGL_SDK_DIR=<path>` を指定してください。
 
 ```bash
-# Windows (x64) -- GLEW は FFGL SDK が要求します。vcpkg で入れるのが簡単です
+# Windows (x64) -- GLEW が必要です(FFGL の公開ヘッダが glew.h を include するため)
 #   vcpkg install glew:x64-windows
 cmake -S plugin -B build -A x64 ^
   -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake

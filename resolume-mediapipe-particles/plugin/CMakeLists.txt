@@ -62,6 +62,13 @@ target_link_libraries( MediaPipeParticles PRIVATE ffgl::sdk )
 find_package( Threads REQUIRED )
 target_link_libraries( MediaPipeParticles PRIVATE Threads::Threads )
 
+if( NOT APPLE )
+	# FFGL.h is a public SDK header that includes <GL/glew.h>, but the SDK
+	# links GLEW privately, so every consumer has to bring it in again.
+	find_package( GLEW REQUIRED )
+	target_link_libraries( MediaPipeParticles PRIVATE GLEW::GLEW )
+endif()
+
 if( WIN32 )
 	# plugMain is the only symbol Resolume looks for.
 	target_sources( MediaPipeParticles PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/MediaPipeParticles.def )
@@ -83,8 +90,7 @@ else()
 	# Linux is not a Resolume platform; this configuration exists so the
 	# plugin can be compiled and statically checked in CI.
 	find_package( OpenGL REQUIRED )
-	find_package( GLEW REQUIRED )
-	target_link_libraries( MediaPipeParticles PRIVATE OpenGL::GL GLEW::GLEW )
+	target_link_libraries( MediaPipeParticles PRIVATE OpenGL::GL )
 endif()
 
 if( MSVC )
