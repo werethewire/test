@@ -248,13 +248,32 @@ Windows / macOS の実機で確認してください。
 
 `.github/workflows/mediapipe-particles.yml` が push / PR ごとに以下を回します。
 
-| ジョブ | 内容 |
-| --- | --- |
-| Linux | ビルド + `ctest` + ヘッドレス描画 3 構成 + トラッカーの構文チェック |
-| Windows | vcpkg で GLEW を入れて x64 DLL をビルド、`plugMain` のエクスポートを確認 |
-| macOS | Universal バンドルをビルド、`lipo` と `nm` でアーキテクチャと `plugMain` を確認 |
+| ジョブ | 内容 | 状態 |
+| --- | --- | --- |
+| Linux | ビルド + `ctest` + ヘッドレス描画 4 構成 + トラッカーの構文チェック | 通過 |
+| Windows | vcpkg で GLEW を入れて x64 DLL をビルド + `ctest` + `dumpbin` で `plugMain` を確認 | 通過 |
+| macOS | Universal バンドルをビルド + `ctest` + `lipo` / `nm` でアーキテクチャと `plugMain` を確認 | 通過 |
 
-成果物は Actions の artifact からダウンロードできます。
+**3 プラットフォームすべてでビルドとテストが通っています。**
+Windows の DLL は以下のエクスポートを持つことを確認済みです。
+
+```
+ordinal hint RVA      name
+      1    0 0000FAC0 SetLogCallback
+      2    1 0000FB30 plugMain
+```
+
+成果物(DLL / .bundle)は Actions の artifact からダウンロードできます。
+
+CI を組んだことで、この環境では再現できない実機固有の問題が 3 件見つかりました。
+いずれも CI 特有の問題ではなく、Windows / macOS で手元ビルドする人が必ず踏むものでした。
+
+- macOS の Universal ビルドで `CMAKE_OSX_ARCHITECTURES` が FFGL SDK 側に伝わっておらず、
+  SDK が arm64 のみでビルドされて x86_64 のリンクが全滅していた
+  (Apple Silicon ネイティブの Resolume 7.11+ は x86_64 のみのプラグインを読み込めません)
+- FFGL SDK は GLEW を `PRIVATE` リンクしているのに公開ヘッダ `FFGL.h` が
+  `<GL/glew.h>` を include しているため、利用側で GLEW を再リンクする必要があった
+- `winsock2.h` 経由の `windows.h` が `min`/`max` をマクロ定義し、`std::max` を壊していた
 
 ## 既知の制約
 
