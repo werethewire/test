@@ -98,11 +98,13 @@ jobs:
           Write-Host "built $($dll.FullName)"
           $dumpbin = Get-ChildItem -Recurse -ErrorAction SilentlyContinue -Filter dumpbin.exe `
             "C:/Program Files/Microsoft Visual Studio" | Select-Object -First 1
-          if ($dumpbin) {
-            $exports = & $dumpbin.FullName /exports $dll.FullName
-            if ($exports -notmatch 'plugMain') { throw "plugMain is not exported" }
-            Write-Host "plugMain is exported"
-          }
+          if (-not $dumpbin) { throw "dumpbin.exe not found, cannot verify the exports" }
+          # Out-String matters: against an array, -notmatch filters elements
+          # instead of returning a boolean, so the check would always "fail".
+          $exports = & $dumpbin.FullName /exports $dll.FullName | Out-String
+          Write-Host $exports
+          if ($exports -notmatch 'plugMain') { throw "plugMain is not exported" }
+          Write-Host "plugMain is exported"
 
       - uses: actions/upload-artifact@v4
         with:
