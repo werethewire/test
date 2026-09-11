@@ -50,14 +50,20 @@
 FFGL SDK は自動取得されます。既存のチェックアウトを使う場合は `-DFFGL_SDK_DIR=<path>` を指定してください。
 
 ```bash
-# Windows (x64)
-cmake -S plugin -B build -G "Visual Studio 17 2022" -A x64
+# Windows (x64) -- GLEW は FFGL SDK が要求します。vcpkg で入れるのが簡単です
+#   vcpkg install glew:x64-windows
+cmake -S plugin -B build -A x64 ^
+  -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake
 cmake --build build --config Release
 
-# macOS (Universal)
+# macOS (Universal: x86_64 + arm64 を既定でビルドします)
 cmake -S plugin -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
+
+ジェネレータは指定していません。Visual Studio のバージョンは環境によって変わるため、
+CMake が見つけたものに任せます。単一アーキテクチャで良い場合は
+`-DCMAKE_OSX_ARCHITECTURES=arm64` のように上書きできます。
 
 生成物:
 
@@ -248,7 +254,6 @@ Windows / macOS の実機で確認してください。
 | Windows | vcpkg で GLEW を入れて x64 DLL をビルド、`plugMain` のエクスポートを確認 |
 | macOS | Universal バンドルをビルド、`lipo` と `nm` でアーキテクチャと `plugMain` を確認 |
 
-Windows / macOS ジョブはこの環境では実行できないため、**最初の CI 実行までは未検証**です。
 成果物は Actions の artifact からダウンロードできます。
 
 ## 既知の制約

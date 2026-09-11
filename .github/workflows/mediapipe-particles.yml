@@ -75,9 +75,13 @@ jobs:
         run: vcpkg install glew:x64-windows
 
       - name: Configure
+        # No -G: the runner image's Visual Studio version moves (it is already
+        # past 2022), so let CMake pick whichever one is installed.
+        # ${env:...} needs the braces, otherwise PowerShell swallows the path
+        # separator into the variable name.
         run: >
-          cmake -S plugin -B build -G "Visual Studio 17 2022" -A x64
-          -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake
+          cmake -S plugin -B build -A x64
+          -DCMAKE_TOOLCHAIN_FILE="${env:VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake"
           -DVCPKG_TARGET_TRIPLET=x64-windows
 
       - name: Build
@@ -92,8 +96,8 @@ jobs:
           $dll = Get-ChildItem -Recurse -Filter MediaPipeParticles.dll build | Select-Object -First 1
           if (-not $dll) { throw "MediaPipeParticles.dll was not produced" }
           Write-Host "built $($dll.FullName)"
-          $dumpbin = Get-ChildItem -Recurse -Filter dumpbin.exe `
-            "C:/Program Files/Microsoft Visual Studio/2022" | Select-Object -First 1
+          $dumpbin = Get-ChildItem -Recurse -ErrorAction SilentlyContinue -Filter dumpbin.exe `
+            "C:/Program Files/Microsoft Visual Studio" | Select-Object -First 1
           if ($dumpbin) {
             $exports = & $dumpbin.FullName /exports $dll.FullName
             if ($exports -notmatch 'plugMain') { throw "plugMain is not exported" }

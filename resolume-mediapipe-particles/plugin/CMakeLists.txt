@@ -4,6 +4,14 @@ project( MediaPipeParticles VERSION 1.0 LANGUAGES CXX )
 set( CMAKE_CXX_STANDARD 14 )
 set( CMAKE_CXX_STANDARD_REQUIRED ON )
 
+# Resolume 7.11+ runs natively on Apple Silicon and refuses to load an x86_64
+# only plugin, so the whole link -- the FFGL SDK static library included -- has
+# to be universal. This has to be set before the SDK target is created, which
+# is why it is up here rather than next to the other Apple settings.
+if( APPLE AND NOT CMAKE_OSX_ARCHITECTURES )
+	set( CMAKE_OSX_ARCHITECTURES "x86_64;arm64" )
+endif()
+
 # ---------------------------------------------------------------- FFGL SDK
 #
 # Point FFGL_SDK_DIR at a checkout of https://github.com/resolume/ffgl, or let
@@ -60,8 +68,7 @@ if( WIN32 )
 	target_link_libraries( MediaPipeParticles PRIVATE Ws2_32 opengl32 )
 	set_target_properties( MediaPipeParticles PROPERTIES SUFFIX ".dll" )
 elseif( APPLE )
-	# Resolume loads .bundle plugins; build universal so it works under both
-	# Rosetta and native Apple Silicon hosts.
+	# Resolume loads .bundle plugins; the architectures were pinned above.
 	set_target_properties( MediaPipeParticles PROPERTIES
 		BUNDLE TRUE
 		BUNDLE_EXTENSION "bundle"
@@ -71,9 +78,6 @@ elseif( APPLE )
 		MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
 		MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
 	)
-	if( NOT CMAKE_OSX_ARCHITECTURES )
-		set_target_properties( MediaPipeParticles PROPERTIES OSX_ARCHITECTURES "x86_64;arm64" )
-	endif()
 	target_link_libraries( MediaPipeParticles PRIVATE "-framework OpenGL" )
 else()
 	# Linux is not a Resolume platform; this configuration exists so the
