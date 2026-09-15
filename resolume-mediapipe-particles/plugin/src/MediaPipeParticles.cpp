@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <mutex>
 
 static CFFGLPluginInfo PluginInfo(
 	PluginFactory< MediaPipeParticles >,// create method
@@ -26,6 +27,66 @@ namespace
 float Clamp01( float v )
 {
 	return v < 0.0f ? 0.0f : ( v > 1.0f ? 1.0f : v );
+}
+
+/// Camera names shared by every instance. Enumerated once when the first
+/// instance is created (which is also when Resolume reads the option list),
+/// and again when someone presses Restart Tracker after plugging a camera in.
+struct CameraCatalog
+{
+	std::mutex mutex;
+	std::vector< std::string > names;
+	int generation = 0;
+};
+
+CameraCatalog& Cameras()
+{
+	static CameraCatalog* catalog = new CameraCatalog();
+	return *catalog;
+}
+
+std::vector< std::string > WithFallback( std::vector< std::string > names )
+{
+	if( !names.empty() )
+		return names;
+#if defined( _WIN32 )
+	return { "No Camera Found" };
+#else
+	// No enumeration here: offer indices, which is what OpenCV takes anyway.
+	return { "Camera 0", "Camera 1", "Camera 2", "Camera 3" };
+#endif
+}
+
+std::vector< std::string > CameraNames( int& generation )
+{
+	CameraCatalog& catalog = Cameras();
+	std::lock_guard< std::mutex > lock( catalog.mutex );
+	if( catalog.generation == 0 )
+	{
+		catalog.names      = WithFallback( mpp::EnumerateCameras() );
+		catalog.generation = 1;
+	}
+	generation = catalog.generation;
+	return catalog.names;
+}
+
+void RefreshCameras()
+{
+	std::vector< std::string > names = WithFallback( mpp::EnumerateCameras() );
+	CameraCatalog& catalog           = Cameras();
+	std::lock_guard< std::mutex > lock( catalog.mutex );
+	if( names != catalog.names )
+	{
+		catalog.names = names;
+		++catalog.generation;
+	}
+}
+
+int CameraGeneration()
+{
+	CameraCatalog& catalog = Cameras();
+	std::lock_guard< std::mutex > lock( catalog.mutex );
+	return catalog.generation;
 }
 }// namespace
 
@@ -127,6 +188,96 @@ MediaPipeParticles::MediaPipeParticles()
 
 	SetParamInfo( PARAM_OSC_PORT, "OSC Port", FF_TYPE_TEXT, oscPortText.c_str() );
 	SetParamGroup( PARAM_OSC_PORT, tracking );
+
+	const char* camera = "Camera";
+
+	raw[ PARAM_TRACKER ] = 1.0f;
+	SetParamInfo( PARAM_TRACKER, "Tracker", FF_TYPE_BOOLEAN, true );
+	SetParamGroup( PARAM_TRACKER, camera );
+
+	std::vector< std::string > cameraNames = CameraNames( cameraListGeneration );
+	SetOptionParamInfo( PARAM_CAMERA, "Camera", unsigned( cameraNames.size() ), 0.0f );
+	for( size_t i = 0; i < cameraNames.size(); ++i )
+		SetParamElementInfo( PARAM_CAMERA, unsigned( i ), cameraNames[ i ].c_str(), float( i ) );
+	SetParamGroup( PARAM_CAMERA, camera );
+
+	raw[ PARAM_PEOPLE ] = 1.0f;
+	SetOptionParamInfo( PARAM_PEOPLE, "People", 3, 1.0f );
+	SetParamElementInfo( PARAM_PEOPLE, 0, "1", 1.0f );
+	SetParamElementInfo( PARAM_PEOPLE, 1, "2", 2.0f );
+	SetParamElementInfo( PARAM_PEOPLE, 2, "3", 3.0f );
+	SetParamGroup( PARAM_PEOPLE, camera );
+
+	SetParamInfo( PARAM_PREVIEW, "Preview Window", FF_TYPE_BOOLEAN, false );
+	SetParamGroup( PARAM_PREVIEW, camera );
+
+	SetParamInfo( PARAM_TRACKER_RESTART, "Restart Tracker", FF_TYPE_EVENT, false );
+	SetParamGroup( PARAM_TRACKER_RESTART, camera );
+}
+
+void MediaPipeParticles::SetCameraElements( const std::vector< std::string >& names, bool raiseEvent )
+{
+	std::vector< float > values;
+	for( size_t i = 0; i < names.size(); ++i )
+		values.push_back( float( i ) );
+	SetParamElements( PARAM_CAMERA, names, values, raiseEvent );
+}
+
+mpp::TrackerSettings MediaPipeParticles::CurrentTrackerSettings() const
+{
+	mpp::TrackerSettings s;
+	s.enabled = raw[ PARAM_TRACKER ] > 0.5f;
+	s.camera  = std::max( 0, int( raw[ PARAM_CAMERA ] + 0.5f ) );
+	s.people  = std::min( 3, std::max( 1, int( raw[ PARAM_PEOPLE ] + 0.5f ) ) );
+	s.preview = raw[ PARAM_PREVIEW ] > 0.5f;
+	return s;
+}
+
+void MediaPipeParticles::UpdateTrackerLauncher( float dt )
+{
+	if( !launcher || launcherPort != requestedPort )
+	{
+		launcher     = mpp::TrackerLauncher::Acquire( requestedPort );
+		launcherPort = requestedPort;
+		// The first instance on a port decides; one added later (a new clip
+		// with default values) must not yank a running tracker to camera 0.
+		ownsInitialSettings = !launcher->HasSettings();
+		if( ownsInitialSettings )
+			launcher->Apply( CurrentTrackerSettings() );
+		stateShown = false;
+	}
+
+	if( trackerSettingsDirty )
+	{
+		// Before the first frame the host is still restoring saved values:
+		// those count only for the instance that started the tracker.
+		if( processedAFrame || ownsInitialSettings )
+			launcher->Apply( CurrentTrackerSettings() );
+		trackerSettingsDirty = false;
+	}
+
+	if( raw[ PARAM_TRACKER_RESTART ] > 0.5f )
+	{
+		raw[ PARAM_TRACKER_RESTART ] = 0.0f;
+		RefreshCameras();
+		launcher->Restart();
+	}
+
+	if( CameraGeneration() != cameraListGeneration )
+		SetCameraElements( CameraNames( cameraListGeneration ), true );
+
+	sinceStatePoll += dt;
+	if( !stateShown || sinceStatePoll >= 0.25f )
+	{
+		sinceStatePoll                 = 0.0f;
+		const mpp::TrackerState state = launcher->State();
+		if( !stateShown || state != shownState )
+		{
+			SetParamDisplayName( PARAM_TRACKER, std::string( "Tracker: " ) + mpp::TrackerStateLabel( state ), true );
+			shownState = state;
+			stateShown = true;
+		}
+	}
 }
 
 // ------------------------------------------------------------------- GL
@@ -151,11 +302,16 @@ FFResult MediaPipeParticles::InitGL( const FFGLViewportStruct* viewport )
 	haveLastFrameTime = false;
 	elapsed           = 0.0f;
 	tracker.Reset();
+
+	// Placing the source is what starts the camera tracker, not playing it.
+	UpdateTrackerLauncher( 0.0f );
 	return FF_SUCCESS;
 }
 
 FFResult MediaPipeParticles::DeInitGL()
 {
+	// The last instance on the port letting go stops the tracker.
+	launcher.reset();
 	receiver.Stop();
 	particles.DeInit();
 	return FF_SUCCESS;
@@ -251,6 +407,9 @@ FFResult MediaPipeParticles::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 	PushParamsToTracker();
 	tracker.Update( gotFrames ? &update : nullptr, dt );
 
+	UpdateTrackerLauncher( dt );
+	processedAFrame = true;
+
 	int wantedSize = int( Mapped( PARAM_COUNT_ ) + 0.5f );
 	if( wantedSize != lastTexSize )
 	{
@@ -279,6 +438,10 @@ FFResult MediaPipeParticles::SetFloatParameter( unsigned int index, float value 
 {
 	if( index >= PARAM_LAST )
 		return FF_FAIL;
+	const bool trackerParam = index == PARAM_TRACKER || index == PARAM_CAMERA ||
+							  index == PARAM_PEOPLE || index == PARAM_PREVIEW;
+	if( trackerParam && raw[ index ] != value )
+		trackerSettingsDirty = true;
 	raw[ index ] = value;
 	return FF_SUCCESS;
 }

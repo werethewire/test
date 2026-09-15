@@ -22,6 +22,7 @@
 	static const socket_t kInvalidSock = INVALID_SOCKET;
 #else
 	#include <arpa/inet.h>
+	#include <fcntl.h>
 	#include <netinet/in.h>
 	#include <sys/socket.h>
 	#include <sys/time.h>
@@ -287,6 +288,14 @@ bool PortListener::Bind( uint16_t port )
 	socket_t s = ::socket( AF_INET, SOCK_DGRAM, IPPROTO_UDP );
 	if( s == kInvalidSock )
 		return false;
+
+	// The plugin launches the tracker as a child process; it must not inherit
+	// this socket, or the port stays bound for as long as the tracker runs.
+#if defined( _WIN32 )
+	SetHandleInformation( reinterpret_cast< HANDLE >( s ), HANDLE_FLAG_INHERIT, 0 );
+#else
+	::fcntl( s, F_SETFD, FD_CLOEXEC );
+#endif
 
 	// No SO_REUSEADDR: UDP has no TIME_WAIT for it to help with, and on
 	// Windows it let a second socket bind the same port and receive a share

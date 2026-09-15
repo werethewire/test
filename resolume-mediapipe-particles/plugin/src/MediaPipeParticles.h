@@ -7,9 +7,12 @@
 #include "OscPose.h"
 #include "ParticleSystem.h"
 #include "PoseTracker.h"
+#include "TrackerLauncher.h"
 
 #include <chrono>
+#include <memory>
 #include <string>
+#include <vector>
 
 class MediaPipeParticles : public CFFGLPlugin
 {
@@ -65,6 +68,12 @@ public:
 		PARAM_POS_X           = 28,
 		PARAM_POS_Y           = 29,
 		PARAM_OSC_PORT        = 30,
+		// Camera -- appended, so saved compositions keep their indices
+		PARAM_TRACKER         = 31,///< launch pose_osc.py from the plugin
+		PARAM_CAMERA          = 32,
+		PARAM_PEOPLE          = 33,
+		PARAM_PREVIEW         = 34,
+		PARAM_TRACKER_RESTART = 35,
 		PARAM_LAST
 	};
 
@@ -93,7 +102,24 @@ private:
 	void PushParamsToTracker();
 	mpp::ParticleParams BuildParticleParams() const;
 
+	mpp::TrackerSettings CurrentTrackerSettings() const;
+	/// Launch/steer the shared tracker and reflect its state in the UI.
+	void UpdateTrackerLauncher( float dt );
+	void SetCameraElements( const std::vector< std::string >& names, bool raiseEvent );
+
 	mpp::PoseReceiver receiver;
+	std::shared_ptr< mpp::TrackerLauncher > launcher;
+	uint16_t launcherPort = 0;
+	/// Set when the user changes a Camera parameter; pushed on the next frame.
+	bool trackerSettingsDirty = false;
+	/// Frames before the first one belong to the host restoring values.
+	bool processedAFrame      = false;
+	/// This instance applied the tracker's first settings on its port.
+	bool ownsInitialSettings  = false;
+	mpp::TrackerState shownState = mpp::TrackerState::Starting;
+	bool stateShown              = false;
+	float sinceStatePoll         = 0.0f;
+	int cameraListGeneration     = 0;
 	mpp::PoseTracker tracker;
 	mpp::ParticleSystem particles;
 

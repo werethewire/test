@@ -36,6 +36,7 @@
 | `plugin/src/ParticleSystem.*` | GPU パーティクル(シミュレーション / 描画 / トレイル / 合成) |
 | `plugin/src/MediaPipeParticles.*` | FFGL プラグイン本体とパラメータ |
 | `plugin/src/Thumbnail.*` | Resolume のソースブラウザに出すサムネイルを CPU 生成 |
+| `plugin/src/TrackerLauncher.*` | プラグインから pose_osc.py を起動・監視。Python 探索、カメラ一覧(DirectShow) |
 | `plugin/tests/test_pose.cpp` | GL を必要としない部分のユニットテスト |
 | `plugin/tests/headless_render.cpp` | EGL でシェーダーを実際に走らせる描画チェック(Linux) |
 
@@ -102,26 +103,82 @@ Resolume が既定で読むのは `<ドキュメント>\Resolume Arena\Extra Eff
 - このソースを使っているクリップが残っていると DLL がロックされ、上書きできません。
   該当クリップを外すか、Arena を終了してから置き換えます。
 - 同じパスの DLL を置き換えると、以後に開くクリップは新しいコードで動きますが、
-  ソース一覧の名前は古い登録のままです。名前を変えたときは Arena を再起動してください。
+  ソース一覧の名前やパラメータ構成は古い登録のままです。名前やパラメータを変えたときは Arena を再起動してください。
+- Sources ブラウザでプラグインを選ぶだけでもプレビュー用のインスタンスが作られ、DLL が掴まれます。
+  その場合も差し替えには Arena の終了が必要です。
+
+トラッカーを自動起動させる場合(次節)は、DLL の隣に同名のフォルダを作って次の 2 ファイルを置きます。
+
+```
+Extra Effects\
+  MediaPipeParticles.dll
+  MediaPipeParticles\
+    pose_osc.py                  (tracker/pose_osc.py)
+    pose_landmarker_full.task    (MediaPipe のモデル。heavy / lite でも可)
+```
+
+このフォルダに Python 本体(DLL を含むもの)は置かないでください。Resolume がプラグインとして読みに行きます。
+
 ブラウザ上のサムネイル(160×120、プラグイン起動時に CPU 生成)はこう表示されます。
 
 ![thumbnail](docs/thumbnail.png)
 
 ## 使い方
 
-1. プラグインをレイヤーに置く(`OSC Port` の既定値は `9010`)。
-2. トラッカーを起動する。
+### プラグインからトラッカーを起動する(既定)
+
+1. mediapipe と OpenCV を入れた Python を用意する(一度だけ)。
 
 ```bash
-pip install -r tracker/requirements.txt
+py -3.10 -m pip install -r tracker/requirements.txt
 curl -LO https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task
+```
+
+2. 上の「インストール」の配置で `pose_osc.py` とモデルを置く。
+3. Resolume でソースをクリップに置く。**置いた時点でトラッカーが起動**します(再生しなくても起動します)。
+4. **Camera** グループの `Camera` でカメラを選ぶ。選び直すと 0.4 秒後にトラッカーが起動し直します。
+
+| パラメータ | 既定 | 説明 |
+| --- | --- | --- |
+| Tracker | on | 自動起動の有無。表示名に状態が出ます(`Tracker: Running` など、下表) |
+| Camera | 先頭のカメラ | Windows は DirectShow のカメラ名一覧。並び順は OpenCV の `CAP_DSHOW` の番号と同じです |
+| People | 1 | 同時に追う人数(1〜3) |
+| Preview Window | off | 検出した骨格を描いたウィンドウを出す |
+| Restart Tracker | — | トラッカーを起動し直し、カメラ一覧と Python も探し直す(カメラを後から挿したとき、mediapipe を入れたあと) |
+
+| 表示 | 意味と対処 |
+| --- | --- |
+| Running | 起動中 |
+| Starting | Python を探している / 起動中 |
+| No Python | mediapipe と cv2 が入った Python が無い。入れてから `Restart Tracker` |
+| No Script / No Model | `MediaPipeParticles\` フォルダに `pose_osc.py` / `.task` が無い |
+| Stopped | トラッカーが自分で終了した(カメラが他のアプリに使われている等)。5 秒ごとに再試行 |
+| Off | `Tracker` が off |
+
+- Python は `py -3.12` → `-3.11` → `-3.10` → `-3.13` → `-3.9` → PATH の `python.exe` → `py -3` の順に探し、
+  `mediapipe` と `cv2` が import できる最初のものを使います。`py` の既定は最新版で、mediapipe の対応より新しいことが多いためです。
+  環境変数 `MPP_PYTHON`(python.exe のフルパス)で固定、`MPP_TRACKER_DIR` でスクリプトとモデルの場所を変えられます。
+- トラッカーの出力は `%LOCALAPPDATA%\MediaPipeParticles\tracker-<ポート>.log` に残ります
+  (探した Python と終了コード、実行したコマンドライン、pose_osc.py の表示)。
+- トラッカーは同じ `OSC Port` のクリップ全体で 1 つです。最初に置いたクリップの設定で起動し、
+  以後はどのクリップで Camera グループを変えても、最後に変えた設定に切り替わります。
+  後から置いたクリップの既定値で、動いているトラッカーがカメラ 0 に戻されることはありません。
+- そのポートのクリップが全部なくなるとトラッカーは止まります。Resolume が落ちた場合も
+  Windows のジョブオブジェクトで一緒に終了するので、カメラを掴んだまま残りません。
+- ウィンドウは出ません(`Preview Window` を on にしたときのプレビューだけ)。
+
+### 手動でトラッカーを起動する
+
+`Tracker` を off にして、自分でコマンドを実行します。別 PC のカメラを使う場合もこちらです。
+
+```bash
 python3 tracker/pose_osc.py --model pose_landmarker_full.task --preview
 ```
 
 `--model` は実質必須です。現行の mediapipe(0.10.35 で確認)には旧 `mp.solutions.pose` が無く、
 `--model` なしでは起動時にその旨を表示して終了します。Windows では `python3` の代わりに `py` を使ってください。
 
-3. カメラの前に立つ。パーティクルが体の輪郭から湧き出します。
+カメラの前に立つと、パーティクルが体の輪郭から湧き出します。
 
 カメラは開けたのに `no frames from device ... try another --backend` が出る場合、
 OpenCV の既定バックエンドがそのカメラから映像を取れていません。
@@ -334,10 +391,18 @@ Resolume のパラメータは OSC / MIDI にそのままマップできるの�
 - `pose_osc.py --model ... --people 3 --device <人が映った動画>` で、実際の MediaPipe 検出
   (約 22 fps、検出率 93〜100%)からパーティクルが体の動きに追従することを確認。
 
+- トラッカー自動起動(`TrackerLauncher`)を実カメラで通しテスト(`MPP_E2E_CAMERA=4` で `mpp_tests`):
+  `py -3.10` を自動で選び(3.12 / 3.11 は mediapipe 無しで除外)、空白を含む `Extra Effects` のパスから起動、
+  1 秒で Running、`USB Video Device`(DirectShow 4 番)から約 26 fps、3 秒間の 50 更新中 46 で人を検出。
+  最後の参照を離すと 1.5 秒間の受信 0、python プロセスも残らないことを確認。
+- DirectShow のカメラ一覧(8 台)と OpenCV `CAP_DSHOW` の番号が一致すること(0〜7 は開けて 8 は開けない、
+  解像度と輝度が各機器と対応)。
+
 確認できていないこと:
 
-- **実カメラ**: この PC の `USB Video Device` は信号の無いキャプチャ機器で、映像が真っ黒でした。
-  Web カメラをつないで `pose_osc.py --preview` を確認してください。
+- **Arena の中からの自動起動と Camera パラメータ**(DLL 差し替えに Arena の再起動が必要なため未実施)。
+- 手動起動の `pose_osc.py` を既定の `--device 0` で試した際に真っ黒だったのは、0 番が
+  `NDI Webcam Video 1`(NDI 入力なし)だったためで、カメラの故障ではありません。
 - 最初に作ったインスタンスが途中から、粒が画面全体に噴き出すような見た目に崩れました
   (輝度が通常の約 3 倍、`Reset` でも戻らない)。同じ入力の順番を新しいインスタンスで再現しても起きず、
   新しいインスタンスを 10 分以上動かしても起きていないため、原因は特定できていません。

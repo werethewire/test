@@ -2,6 +2,7 @@
 // Build:  c++ -std=c++14 -I../src test_pose.cpp ../src/OscPose.cpp ../src/PoseTracker.cpp -o test_pose -lpthread
 #include "OscPose.h"
 #include "PoseTracker.h"
+#include "TrackerLauncher.h"
 
 #include <algorithm>
 #include <chrono>
@@ -28,6 +29,7 @@
 	#include <arpa/inet.h>
 	#include <netinet/in.h>
 	#include <sys/socket.h>
+	#include <sys/stat.h>
 	#include <unistd.h>
 #endif
 
@@ -910,6 +912,185 @@ static void TestOtherProcessCannotSplitThePort()
 	rx.Stop();
 }
 
+static void TestQuoteWindowsArgument()
+{
+	CHECK( mpp::QuoteWindowsArgument( "plain" ) == "plain" );
+	CHECK( mpp::QuoteWindowsArgument( "" ) == "\"\"" );
+	// Resolume's default plugin folder has spaces in it.
+	CHECK( mpp::QuoteWindowsArgument( "G:\\document\\Resolume Arena\\Extra Effects\\x.py" ) ==
+		   "\"G:\\document\\Resolume Arena\\Extra Effects\\x.py\"" );
+	// Backslashes only double where a quote follows them.
+	CHECK( mpp::QuoteWindowsArgument( "C:\\a dir\\" ) == "\"C:\\a dir\\\\\"" );
+	CHECK( mpp::QuoteWindowsArgument( "say \"hi\"" ) == "\"say \\\"hi\\\"\"" );
+	CHECK( mpp::QuoteWindowsArgument( "a\\\"b" ) == "\"a\\\\\\\"b\"" );
+}
+
+static void TestBuildTrackerArguments()
+{
+	mpp::TrackerFiles files;
+	files.script = "/t/pose_osc.py";
+	files.model  = "/t/pose_landmarker_full.task";
+	mpp::TrackerSettings settings;
+	settings.camera  = 2;
+	settings.people  = 3;
+	settings.preview = true;
+
+	std::vector< std::string > args = mpp::BuildTrackerArguments( files, settings, 9011 );
+	auto valueAfter = [ &args ]( const char* flag ) -> std::string {
+		for( size_t i = 0; i + 1 < args.size(); ++i )
+		{
+			if( args[ i ] == flag )
+				return args[ i + 1 ];
+		}
+		return "<missing>";
+	};
+	CHECK( !args.empty() && args[ 0 ] == files.script );
+	CHECK( valueAfter( "--model" ) == files.model );
+	CHECK( valueAfter( "--device" ) == "2" );
+	CHECK( valueAfter( "--people" ) == "3" );
+	CHECK( valueAfter( "--port" ) == "9011" );
+	CHECK( std::find( args.begin(), args.end(), "--preview" ) != args.end() );
+#if defined( _WIN32 )
+	// Camera indices come from DirectShow and only match that backend.
+	CHECK( valueAfter( "--backend" ) == "dshow" );
+#endif
+
+	settings.people  = 7;// out of range is clamped, not passed through to argparse
+	settings.preview = false;
+	args             = mpp::BuildTrackerArguments( files, settings, 9010 );
+	CHECK( valueAfter( "--people" ) == "3" );
+	CHECK( std::find( args.begin(), args.end(), "--preview" ) == args.end() );
+}
+
+static std::string MakeTempDir( const char* tag )
+{
+#if defined( _WIN32 )
+	char base[ MAX_PATH ];
+	GetTempPathA( MAX_PATH, base );
+	std::string dir = std::string( base ) + "mpp_test_" + tag + "_" + std::to_string( GetCurrentProcessId() );
+	CreateDirectoryA( dir.c_str(), nullptr );
+#else
+	std::string dir = std::string( "/tmp/mpp_test_" ) + tag + "_" + std::to_string( getpid() );
+	::mkdir( dir.c_str(), 0755 );
+#endif
+	return dir;
+}
+
+static void TouchFile( const std::string& path )
+{
+	FILE* f = std::fopen( path.c_str(), "wb" );
+	if( f != nullptr )
+		std::fclose( f );
+}
+
+static void TestFindTrackerFiles()
+{
+#if defined( _WIN32 )
+	const char sep = '\\';
+#else
+	const char sep = '/';
+#endif
+	std::string empty    = MakeTempDir( "empty" );
+	std::string noModel  = MakeTempDir( "nomodel" );
+	std::string complete = MakeTempDir( "complete" );
+	TouchFile( noModel + sep + "pose_osc.py" );
+	TouchFile( complete + sep + "pose_osc.py" );
+	TouchFile( complete + sep + "pose_landmarker_lite.task" );
+	TouchFile( complete + sep + "pose_landmarker_full.task" );
+
+	mpp::TrackerFiles files;
+	CHECK( mpp::FindTrackerFiles( { empty }, files ) == mpp::TrackerState::NoScript );
+	CHECK( mpp::FindTrackerFiles( { empty, noModel }, files ) == mpp::TrackerState::NoModel );
+
+	// A later folder that has everything wins over an earlier half-installed one,
+	// and full is preferred to lite.
+	files = mpp::TrackerFiles();
+	CHECK( mpp::FindTrackerFiles( { noModel, complete }, files ) == mpp::TrackerState::Running );
+	CHECK( files.script == complete + sep + "pose_osc.py" );
+	CHECK( files.model == complete + sep + "pose_landmarker_full.task" );
+}
+
+static void TestEnumerateCameras()
+{
+	// Nothing to assert about the machine's hardware; this proves the
+	// enumeration runs and returns, and shows what the Camera menu will list.
+	std::vector< std::string > cameras = mpp::EnumerateCameras();
+	std::printf( "cameras: %d\n", int( cameras.size() ) );
+	for( size_t i = 0; i < cameras.size(); ++i )
+		std::printf( "  %d: %s\n", int( i ), cameras[ i ].c_str() );
+}
+
+static void TestLauncherEndToEnd()
+{
+	// Opt in: this starts a real Python, MediaPipe and a camera, which CI has
+	// none of. MPP_E2E_CAMERA is the camera index; MPP_TRACKER_DIR must point
+	// at a folder with pose_osc.py and a model.
+	const char* cameraEnv = std::getenv( "MPP_E2E_CAMERA" );
+	if( cameraEnv == nullptr )
+	{
+		std::printf( "SKIP launcher end to end (set MPP_E2E_CAMERA)\n" );
+		return;
+	}
+
+	const uint16_t port = 19410;
+	mpp::PoseReceiver rx;
+	CHECK( rx.Start( port ) );
+
+	auto launcher = mpp::TrackerLauncher::Acquire( port );
+	CHECK( !launcher->HasSettings() );
+	CHECK( mpp::TrackerLauncher::Acquire( port ) == launcher );// shared per port
+
+	mpp::TrackerSettings settings;
+	settings.camera = std::atoi( cameraEnv );
+	launcher->Apply( settings );
+	std::printf( "launcher log: %s\n", launcher->LogPath().c_str() );
+
+	auto started = std::chrono::steady_clock::now();
+	auto seconds = [ &started ] {
+		return std::chrono::duration< double >( std::chrono::steady_clock::now() - started ).count();
+	};
+	while( launcher->State() != mpp::TrackerState::Running && seconds() < 60.0 )
+		std::this_thread::sleep_for( std::chrono::milliseconds( 100 ) );
+	std::printf( "state %s after %.1f s\n", mpp::TrackerStateLabel( launcher->State() ), seconds() );
+	CHECK( launcher->State() == mpp::TrackerState::Running );
+
+	// The tracker sends /mp/pose or /mp/clear every camera frame, so something
+	// has to arrive whether or not anybody is in front of the camera.
+	mpp::PoseUpdate got;
+	bool received = false;
+	while( !received && seconds() < 90.0 )
+	{
+		received = rx.PollLatest( got );
+		if( !received )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 50 ) );
+	}
+	std::printf( "first packet after %.1f s, body 0 present=%d\n", seconds(), received ? int( got.frames[ 0 ].present ) : -1 );
+	CHECK( received );
+
+	int present = 0, total = 0;
+	auto sampleUntil = seconds() + 3.0;
+	while( seconds() < sampleUntil )
+	{
+		if( rx.PollLatest( got ) )
+		{
+			++total;
+			present += got.frames[ 0 ].present ? 1 : 0;
+		}
+		std::this_thread::sleep_for( std::chrono::milliseconds( 10 ) );
+	}
+	std::printf( "3 s sample: %d updates, body present in %d\n", total, present );
+	CHECK( total > 10 );
+
+	// Releasing the last reference must take the tracker down with it.
+	launcher.reset();
+	const uint64_t before = rx.PacketCount();
+	std::this_thread::sleep_for( std::chrono::milliseconds( 1500 ) );
+	const uint64_t after = rx.PacketCount();
+	std::printf( "packets in 1.5 s after release: %d\n", int( after - before ) );
+	CHECK( after - before < 5 );
+	rx.Stop();
+}
+
 int main()
 {
 	TestParsePose();
@@ -929,6 +1110,11 @@ int main()
 	TestReceiverRebindsAfterAFailedStart();
 	TestReceiversShareAPort();
 	TestOtherProcessCannotSplitThePort();
+	TestQuoteWindowsArgument();
+	TestBuildTrackerArguments();
+	TestFindTrackerFiles();
+	TestEnumerateCameras();
+	TestLauncherEndToEnd();
 
 	if( failures == 0 )
 		std::printf( "all pose tests passed\n" );

@@ -65,9 +65,21 @@ add_library( MediaPipeParticles MODULE
 	src/GLInclude.h
 	src/Thumbnail.cpp
 	src/Thumbnail.h
+	src/TrackerLauncher.cpp
+	src/TrackerLauncher.h
 )
 
 target_include_directories( MediaPipeParticles PRIVATE src )
+
+# The tracker launcher enumerates cameras through DirectShow on Windows and
+# uses dladdr to find the plugin's own folder elsewhere.
+set( MPP_LAUNCHER_LIBS "" )
+if( WIN32 )
+	set( MPP_LAUNCHER_LIBS strmiids ole32 oleaut32 )
+elseif( NOT APPLE )
+	set( MPP_LAUNCHER_LIBS ${CMAKE_DL_LIBS} )
+endif()
+target_link_libraries( MediaPipeParticles PRIVATE ${MPP_LAUNCHER_LIBS} )
 target_link_libraries( MediaPipeParticles PRIVATE ffgl::sdk )
 
 find_package( Threads REQUIRED )
@@ -119,9 +131,10 @@ if( MPP_BUILD_TESTS )
 		tests/test_pose.cpp
 		src/OscPose.cpp
 		src/PoseTracker.cpp
+		src/TrackerLauncher.cpp
 	)
 	target_include_directories( mpp_tests PRIVATE src )
-	target_link_libraries( mpp_tests PRIVATE Threads::Threads )
+	target_link_libraries( mpp_tests PRIVATE Threads::Threads ${MPP_LAUNCHER_LIBS} )
 	if( WIN32 )
 		target_link_libraries( mpp_tests PRIVATE Ws2_32 )
 	endif()
