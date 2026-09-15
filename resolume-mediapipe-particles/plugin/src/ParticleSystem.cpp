@@ -423,6 +423,75 @@ void SetUniform3f( GLuint program, const char* name, const float* rgb )
 {
 	glUniform3f( glGetUniformLocation( program, name ), rgb[ 0 ], rgb[ 1 ], rgb[ 2 ] );
 }
+
+void SetEnabled( GLenum capability, GLboolean enabled )
+{
+	if( enabled )
+		glEnable( capability );
+	else
+		glDisable( capability );
+}
+
+/// Saves the host GL state this plugin touches, forces what our own passes
+/// need, and puts the host's back afterwards.
+///
+/// A plugin shares Resolume's context. A scissor box, face culling, a stencil
+/// test or a colour write mask left enabled by the host would silently clip or
+/// blank our output -- the classic "renders in the test harness, black in the
+/// host" failure -- and anything we flip and forget would do the same to the
+/// host's own drawing.
+struct HostGlState
+{
+	GLboolean blend            = GL_FALSE;
+	GLboolean depthTest        = GL_FALSE;
+	GLboolean scissorTest      = GL_FALSE;
+	GLboolean cullFace         = GL_FALSE;
+	GLboolean stencilTest      = GL_FALSE;
+	GLboolean programPointSize = GL_FALSE;
+	GLint blendSrcRgb          = GL_ONE;
+	GLint blendDstRgb          = GL_ZERO;
+	GLint blendSrcAlpha        = GL_ONE;
+	GLint blendDstAlpha        = GL_ZERO;
+	GLboolean colorMask[ 4 ]   = { GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE };
+
+	void Save()
+	{
+		blend            = glIsEnabled( GL_BLEND );
+		depthTest        = glIsEnabled( GL_DEPTH_TEST );
+		scissorTest      = glIsEnabled( GL_SCISSOR_TEST );
+		cullFace         = glIsEnabled( GL_CULL_FACE );
+		stencilTest      = glIsEnabled( GL_STENCIL_TEST );
+		programPointSize = glIsEnabled( GL_PROGRAM_POINT_SIZE );
+		glGetIntegerv( GL_BLEND_SRC_RGB, &blendSrcRgb );
+		glGetIntegerv( GL_BLEND_DST_RGB, &blendDstRgb );
+		glGetIntegerv( GL_BLEND_SRC_ALPHA, &blendSrcAlpha );
+		glGetIntegerv( GL_BLEND_DST_ALPHA, &blendDstAlpha );
+		glGetBooleanv( GL_COLOR_WRITEMASK, colorMask );
+	}
+
+	/// Everything our passes assume. Blending is not here: each pass sets its
+	/// own mode.
+	static void ApplyOurs()
+	{
+		glDisable( GL_DEPTH_TEST );
+		glDisable( GL_SCISSOR_TEST );
+		glDisable( GL_CULL_FACE );
+		glDisable( GL_STENCIL_TEST );
+		glColorMask( GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE );
+	}
+
+	void Restore() const
+	{
+		glBlendFuncSeparate( blendSrcRgb, blendDstRgb, blendSrcAlpha, blendDstAlpha );
+		glColorMask( colorMask[ 0 ], colorMask[ 1 ], colorMask[ 2 ], colorMask[ 3 ] );
+		SetEnabled( GL_BLEND, blend );
+		SetEnabled( GL_DEPTH_TEST, depthTest );
+		SetEnabled( GL_SCISSOR_TEST, scissorTest );
+		SetEnabled( GL_CULL_FACE, cullFace );
+		SetEnabled( GL_STENCIL_TEST, stencilTest );
+		SetEnabled( GL_PROGRAM_POINT_SIZE, programPointSize );
+	}
+};
 }// namespace
 
 // --------------------------------------------------------------- lifecycle
@@ -725,14 +794,9 @@ void ParticleSystem::DrawFrame( const PoseTracker& pose,
 	// every particle across the frame.
 	dt = std::max( 0.0f, std::min( dt, 0.1f ) );
 
-	// FFGL plugins share the host's context, so anything we flip has to go back.
-	const GLboolean hadBlend = glIsEnabled( GL_BLEND );
-	const GLboolean hadDepth = glIsEnabled( GL_DEPTH_TEST );
-	GLint blendSrcRgb = GL_ONE, blendDstRgb = GL_ZERO, blendSrcAlpha = GL_ONE, blendDstAlpha = GL_ZERO;
-	glGetIntegerv( GL_BLEND_SRC_RGB, &blendSrcRgb );
-	glGetIntegerv( GL_BLEND_DST_RGB, &blendDstRgb );
-	glGetIntegerv( GL_BLEND_SRC_ALPHA, &blendSrcAlpha );
-	glGetIntegerv( GL_BLEND_DST_ALPHA, &blendDstAlpha );
+	HostGlState hostState;
+	hostState.Save();
+	hostState.ApplyOurs();
 
 	if( needsSeed )
 		SeedParticles();
@@ -746,7 +810,6 @@ void ParticleSystem::DrawFrame( const PoseTracker& pose,
 	glDrawBuffers( 2, simBuffers );
 	glViewport( 0, 0, texSize, texSize );
 	glDisable( GL_BLEND );
-	glDisable( GL_DEPTH_TEST );
 
 	glUseProgram( simProgram );
 	glActiveTexture( GL_TEXTURE0 );
@@ -858,7 +921,6 @@ void ParticleSystem::DrawFrame( const PoseTracker& pose,
 	glBindVertexArray( pointVao );
 	glDrawArrays( GL_POINTS, 0, ParticleCount() );
 	glBindVertexArray( 0 );
-	glDisable( GL_PROGRAM_POINT_SIZE );
 
 	// -------- 3. composite into whatever Resolume handed us
 	glBindFramebuffer( GL_FRAMEBUFFER, hostFbo );
@@ -878,15 +940,7 @@ void ParticleSystem::DrawFrame( const PoseTracker& pose,
 	glBindTexture( GL_TEXTURE_2D, 0 );
 	glUseProgram( 0 );
 
-	glBlendFuncSeparate( blendSrcRgb, blendDstRgb, blendSrcAlpha, blendDstAlpha );
-	if( hadBlend )
-		glEnable( GL_BLEND );
-	else
-		glDisable( GL_BLEND );
-	if( hadDepth )
-		glEnable( GL_DEPTH_TEST );
-	else
-		glDisable( GL_DEPTH_TEST );
+	hostState.Restore();
 }
 
 }// namespace mpp

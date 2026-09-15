@@ -147,64 +147,156 @@ int main( int argc, char** argv )
     int nonZeroPixels = 0;
     std::vector<unsigned char> pixels(W*H*4);
 
-    const bool resizeTest = std::strcmp( mode, "resize" ) == 0;
+    const bool resizeTest  = std::strcmp( mode, "resize" ) == 0;
+    const bool hostileTest = std::strcmp( mode, "hostile" ) == 0;
     int litBeforeResize = -1;
     int litAfterResize  = -1;
 
-    auto countLit = [ & ]() {
+    auto readHost = [ & ]() {
         glBindFramebuffer( GL_FRAMEBUFFER, hostFbo );
         glReadPixels( 0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data() );
+    };
+    auto countLit = [ & ]() {
+        readHost();
         int lit = 0;
         for( size_t i = 0; i < pixels.size(); i += 4 )
             if( pixels[i] || pixels[i+1] || pixels[i+2] ) ++lit;
         return lit;
     };
+    auto sumRed = [ & ]() {
+        readHost();
+        long long total = 0;
+        for( size_t i = 0; i < pixels.size(); i += 4 ) total += pixels[i];
+        return total;
+    };
 
-    for( int frame = 0; frame < 90; ++frame )
+    // The state a host might plausibly leave behind: a tight scissor box,
+    // culling with reversed winding, a colour mask that drops red and blue,
+    // and depth/stencil tests that reject everything. A plugin that does not
+    // guard against these renders clipped, miscoloured or black inside
+    // Resolume while looking perfect in a test harness.
+    auto applyHostileState = []() {
+        glEnable( GL_SCISSOR_TEST ); glScissor( 0, 0, 4, 4 );
+        glEnable( GL_CULL_FACE ); glCullFace( GL_BACK ); glFrontFace( GL_CW );
+        glColorMask( GL_FALSE, GL_TRUE, GL_FALSE, GL_TRUE );
+        glEnable( GL_DEPTH_TEST ); glDepthFunc( GL_NEVER );
+        glEnable( GL_STENCIL_TEST ); glStencilFunc( GL_NEVER, 0, 0xFF );
+    };
+    auto clearHostileState = []() {
+        glDisable( GL_SCISSOR_TEST );
+        glDisable( GL_CULL_FACE ); glFrontFace( GL_CCW );
+        glColorMask( GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE );
+        glDisable( GL_DEPTH_TEST ); glDepthFunc( GL_LESS );
+        glDisable( GL_STENCIL_TEST );
+    };
+
+    bool stateRestored = true;
+    auto checkStateRestored = [ & ]() {
+        GLboolean mask[ 4 ] = { GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE };
+        glGetBooleanv( GL_COLOR_WRITEMASK, mask );
+        bool good = glIsEnabled( GL_SCISSOR_TEST ) && glIsEnabled( GL_CULL_FACE )
+                 && glIsEnabled( GL_DEPTH_TEST ) && glIsEnabled( GL_STENCIL_TEST )
+                 && mask[0] == GL_FALSE && mask[1] == GL_TRUE
+                 && mask[2] == GL_FALSE && mask[3] == GL_TRUE;
+        if( !good )
+            stateRestored = false;
+    };
+
+    // A host owns its target and hands it over fresh. Without this the second
+    // run would still be looking at the first run's pixels wherever the plugin
+    // failed to write -- which is exactly the failure this mode hunts for.
+    auto clearHost = [ & ]() {
+        glDisable( GL_SCISSOR_TEST );
+        glColorMask( GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE );
+        glBindFramebuffer( GL_FRAMEBUFFER, hostFbo );
+        const float transparent[ 4 ] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        glClearBufferfv( GL_COLOR, 0, transparent );
+    };
+
+    int failedFrame = -1;
+    auto runScene = [ & ]( bool hostile ) {
+        clearHost();
+        t = 0.0f;
+        for( int frame = 0; frame < 90; ++frame )
+        {
+            mpp::PoseUpdate update;
+            update.frames[0].present = true;
+            update.fresh[0] = true;
+            if( twoBodies )
+            {
+                // Body 0 is near and on the left, body 1 is far and on the right.
+                FillPose(update.frames[0].lm, t, -0.20f, -0.45f, 1.00f);
+                update.frames[1].present = true;
+                update.fresh[1] = true;
+                FillPose(update.frames[1].lm, t * 1.3f, 0.22f, 0.45f, 0.70f);
+            }
+            else
+            {
+                FillPose(update.frames[0].lm, t);
+            }
+            tracker.Update(&update, dt);
+            t += dt;
+
+            if( hostile )
+                applyHostileState();
+            ps.DrawFrame(tracker, params, dt, t, W, H, hostFbo);
+            if( hostile )
+            {
+                checkStateRestored();
+                clearHostileState();
+            }
+
+            GLenum err = glGetError();
+            if( err != GL_NO_ERROR ) { printf("GL error 0x%x at frame %d\n", err, frame); failedFrame = frame; return; }
+
+            if( resizeTest && frame == 60 )
+            {
+                // Change the particle count mid flight, the way riding the
+                // Particles fader does, and check the image survives it.
+                litBeforeResize = countLit();
+                ps.SetTextureSize( 256 );
+                printf("resized 128 -> %d (%d particles)\n", ps.TextureSize(), ps.ParticleCount());
+            }
+            else if( resizeTest && frame == 61 )
+            {
+                litAfterResize = countLit();
+            }
+        }
+    };
+
+    runScene( false );
+    if( failedFrame >= 0 ) return 1;
+
+    const int cleanLit       = countLit();
+    const long long cleanRed = sumRed();
+
+    int hostileLit = -1;
+    long long hostileRed = -1;
+    if( hostileTest )
     {
-        mpp::PoseUpdate update;
-        update.frames[0].present = true;
-        update.fresh[0] = true;
-        if( twoBodies )
-        {
-            // Body 0 is near and on the left, body 1 is far and on the right.
-            FillPose(update.frames[0].lm, t, -0.20f, -0.45f, 1.00f);
-            update.frames[1].present = true;
-            update.fresh[1] = true;
-            FillPose(update.frames[1].lm, t * 1.3f, 0.22f, 0.45f, 0.70f);
-        }
-        else
-        {
-            FillPose(update.frames[0].lm, t);
-        }
-        tracker.Update(&update, dt);
-        t += dt;
-        ps.DrawFrame(tracker, params, dt, t, W, H, hostFbo);
-        GLenum err = glGetError();
-        if( err != GL_NO_ERROR ) { printf("GL error 0x%x at frame %d\n", err, frame); return 1; }
-
-        if( resizeTest && frame == 60 )
-        {
-            // Change the particle count mid flight, the way riding the
-            // Particles fader does, and check the image survives it.
-            litBeforeResize = countLit();
-            ps.SetTextureSize( 256 );
-            printf("resized 128 -> %d (%d particles)\n", ps.TextureSize(), ps.ParticleCount());
-        }
-        else if( resizeTest && frame == 61 )
-        {
-            litAfterResize = countLit();
-        }
+        // Same scene again from scratch, this time with the host fighting us.
+        ps.DeInit();
+        if( !ps.Init() ) { printf("re-init failed\n"); return 1; }
+        ps.SetTextureSize( 128 );
+        tracker.Reset();
+        runScene( true );
+        clearHostileState();
+        if( failedFrame >= 0 ) return 1;
+        hostileLit = countLit();
+        hostileRed = sumRed();
     }
 
-    glBindFramebuffer(GL_FRAMEBUFFER, hostFbo);
-    glReadPixels(0,0,W,H,GL_RGBA,GL_UNSIGNED_BYTE,pixels.data());
+    readHost();
     for( size_t i=0;i<pixels.size();i+=4 ) if( pixels[i]||pixels[i+1]||pixels[i+2] ) ++nonZeroPixels;
     printf("lit pixels: %d / %d (%.1f%%)  bodies=%d\n", nonZeroPixels, W*H,
            100.0*nonZeroPixels/(W*H), tracker.ActiveBodies());
 
     // Write a PPM (flipped, since GL origin is bottom-left).
-    FILE* f = fopen( twoBodies ? "headless_two.ppm" : ( argc > 1 ? "headless_alt.ppm" : "headless_out.ppm" ), "wb" );
+    const char* outName = "headless_out.ppm";
+    if( twoBodies )       outName = "headless_two.ppm";
+    else if( hostileTest ) outName = "headless_hostile.ppm";
+    else if( argc > 1 )   outName = "headless_alt.ppm";
+    FILE* f = fopen( outName, "wb" );
     fprintf(f,"P6\n%d %d\n255\n",W,H);
     for(int y=H-1;y>=0;--y) for(int x=0;x<W;++x){ const unsigned char* p=&pixels[(y*W+x)*4]; fwrite(p,1,3,f); }
     fclose(f);
@@ -222,6 +314,21 @@ int main( int argc, char** argv )
         printf("%s\n", survived ? "PASS: particles survived the resize"
                                  : "FAIL: the resize wiped the frame");
         ok = ok && survived;
+    }
+
+    if( hostileTest )
+    {
+        printf("clean lit=%d red=%lld | hostile lit=%d red=%lld\n",
+               cleanLit, cleanRed, hostileLit, hostileRed);
+        // The two runs are the same scene, so they must match exactly: a
+        // scissor box would cut the frame down, a colour mask would zero red,
+        // culling would drop the fullscreen passes entirely.
+        const bool identical = hostileLit == cleanLit && hostileRed == cleanRed;
+        printf("%s\n", identical ? "PASS: host state did not affect our output"
+                                  : "FAIL: hostile host state changed the render");
+        printf("%s\n", stateRestored ? "PASS: host state was handed back untouched"
+                                      : "FAIL: host state was not restored");
+        ok = ok && identical && stateRestored;
     }
 
     ps.DeInit();
