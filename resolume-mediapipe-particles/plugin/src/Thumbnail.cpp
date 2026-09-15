@@ -83,12 +83,15 @@ std::vector< CFFGLColor > GenerateThumbnail( unsigned int width, unsigned int he
 	{
 		const Bone& bone = BONES[ i ];
 		float length     = 0.0f;
-		if( posed[ bone.a ] && posed[ bone.b ] )
+		// The icon shows the Whole Body look, which leaves the face and hand
+		// detail bones out.
+		const bool detail = bone.group == GROUP_FACE || bone.group == GROUP_HANDS;
+		if( posed[ bone.a ] && posed[ bone.b ] && !detail )
 		{
 			float dx = jointX[ bone.b ] - jointX[ bone.a ];
 			float dy = jointY[ bone.b ] - jointY[ bone.a ];
 			length   = std::sqrt( dx * dx + dy * dy );
-			if( bone.group == GROUP_HEAD )
+			if( bone.group == GROUP_HEAD || bone.group == GROUP_NECK )
 				length *= 1.6f;
 		}
 		total += length;

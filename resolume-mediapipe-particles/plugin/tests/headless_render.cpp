@@ -6,16 +6,32 @@
 // machine that has neither Resolume nor a GPU: shaders compile on a real
 // driver, framebuffers come back complete, and the frame is not empty.
 //
-// Linux only, and off by default:
+// Off by default:
 //   cmake -S plugin -B build -DMPP_BUILD_HEADLESS_TEST=ON
 //   LIBGL_ALWAYS_SOFTWARE=1 ./build/mpp_headless        # whole body
 //   LIBGL_ALWAYS_SOFTWARE=1 ./build/mpp_headless alt    # trails + attract
 //   LIBGL_ALWAYS_SOFTWARE=1 ./build/mpp_headless two    # two bodies + depth
 //   LIBGL_ALWAYS_SOFTWARE=1 ./build/mpp_headless resize # particle count change
-#define GLEW_STATIC
-#include <GL/glew.h>
-#include <EGL/egl.h>
-#include <EGL/eglext.h>
+//   LIBGL_ALWAYS_SOFTWARE=1 ./build/mpp_headless hands  # Emit From = Hands
+//   LIBGL_ALWAYS_SOFTWARE=1 ./build/mpp_headless head   # Emit From = Head
+//
+// On Windows it creates the context on a hidden window instead of EGL, which
+// runs the shaders on the real GPU driver Resolume would use.
+#ifndef GLEW_STATIC
+	#define GLEW_STATIC
+#endif
+#if defined( _WIN32 )
+	#ifndef NOMINMAX
+		#define NOMINMAX
+	#endif
+	#include <windows.h>
+	#include <GL/glew.h>
+	#include <GL/wglew.h>
+#else
+	#include <GL/glew.h>
+	#include <EGL/egl.h>
+	#include <EGL/eglext.h>
+#endif
 
 #include "ParticleSystem.h"
 #include "PoseTracker.h"
@@ -43,10 +59,57 @@ static void FillPose( float* lm, float t, float shiftX = 0.0f, float depth = 0.0
     set(mpp::LM_LEFT_KNEE,0.45f,0.76f); set(mpp::LM_RIGHT_KNEE,0.55f,0.76f);
     set(mpp::LM_LEFT_ANKLE,0.45f,0.93f); set(mpp::LM_RIGHT_ANKLE,0.55f,0.93f);
     set(mpp::LM_LEFT_FOOT,0.42f,0.97f); set(mpp::LM_RIGHT_FOOT,0.58f,0.97f);
+    // Face and fingers, for the Head and Hands modes. The fingers follow the wrists.
+    set(mpp::LM_LEFT_EYE_INNER,0.49f,0.135f); set(mpp::LM_LEFT_EYE,0.48f,0.135f); set(mpp::LM_LEFT_EYE_OUTER,0.47f,0.135f);
+    set(mpp::LM_RIGHT_EYE_INNER,0.51f,0.135f); set(mpp::LM_RIGHT_EYE,0.52f,0.135f); set(mpp::LM_RIGHT_EYE_OUTER,0.53f,0.135f);
+    set(mpp::LM_MOUTH_LEFT,0.485f,0.18f); set(mpp::LM_MOUTH_RIGHT,0.515f,0.18f);
+    float ly = 0.30f+swing*2.f, ry = 0.30f-swing*2.f;
+    set(mpp::LM_LEFT_PINKY,0.14f,ly+0.03f); set(mpp::LM_LEFT_INDEX,0.13f,ly); set(mpp::LM_LEFT_THUMB,0.15f,ly-0.03f);
+    set(mpp::LM_RIGHT_PINKY,0.86f,ry+0.03f); set(mpp::LM_RIGHT_INDEX,0.87f,ry); set(mpp::LM_RIGHT_THUMB,0.85f,ry-0.03f);
 }
+
+#if defined( _WIN32 )
+static LRESULT CALLBACK HiddenWindowProc( HWND w, UINT m, WPARAM wp, LPARAM lp ) { return DefWindowProcA( w, m, wp, lp ); }
+
+/// A 4.1 core context on a hidden window: a legacy context first, only to
+/// resolve wglCreateContextAttribsARB, then the real one.
+static bool CreateHiddenCoreContext()
+{
+    HINSTANCE instance = GetModuleHandleA( nullptr );
+    WNDCLASSA wc = {};
+    wc.style = CS_OWNDC; wc.lpfnWndProc = HiddenWindowProc; wc.hInstance = instance; wc.lpszClassName = "mpp_headless";
+    if( !RegisterClassA( &wc ) ) return false;
+    HWND window = CreateWindowExA( 0, wc.lpszClassName, wc.lpszClassName, WS_OVERLAPPEDWINDOW, 0, 0, 16, 16,
+                                   nullptr, nullptr, instance, nullptr );
+    if( !window ) return false;
+    HDC dc = GetDC( window );
+    PIXELFORMATDESCRIPTOR pfd = {};
+    pfd.nSize = sizeof( pfd ); pfd.nVersion = 1;
+    pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+    pfd.iPixelType = PFD_TYPE_RGBA; pfd.cColorBits = 32;
+    int format = ChoosePixelFormat( dc, &pfd );
+    if( format == 0 || !SetPixelFormat( dc, format, &pfd ) ) return false;
+    HGLRC legacy = wglCreateContext( dc );
+    if( !legacy || !wglMakeCurrent( dc, legacy ) ) return false;
+    glewExperimental = GL_TRUE;
+    if( glewInit() != GLEW_OK || !wglewIsSupported( "WGL_ARB_create_context" ) ) return false;
+    const int attribs[] = { WGL_CONTEXT_MAJOR_VERSION_ARB, 4, WGL_CONTEXT_MINOR_VERSION_ARB, 1,
+                            WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB, 0 };
+    HGLRC core = wglCreateContextAttribsARB( dc, nullptr, attribs );
+    if( !core ) return false;
+    wglMakeCurrent( dc, core );
+    wglDeleteContext( legacy );
+    glewExperimental = GL_TRUE;
+    return glewInit() == GLEW_OK;
+}
+#endif
 
 int main( int argc, char** argv )
 {
+#if defined( _WIN32 )
+    if( !CreateHiddenCoreContext() ) { printf( "no 4.1 core context\n" ); return 2; }
+    while( glGetError() != GL_NO_ERROR ) {}
+#else
     // No X server here: go through the surfaceless / device EGL platforms and
     // render entirely into FBOs.
     EGLDisplay dpy = EGL_NO_DISPLAY;
@@ -91,6 +154,7 @@ int main( int argc, char** argv )
     // points are still resolved.
     if( glewStatus != GLEW_OK && glewStatus != 4 ) { printf("glewInit failed: %d\n", glewStatus); return 2; }
     while( glGetError() != GL_NO_ERROR ) {}
+#endif
     printf("GL %s | %s\n", (const char*)glGetString(GL_VERSION), (const char*)glGetString(GL_RENDERER));
 
     // Stand in for Resolume's host FBO.
@@ -140,6 +204,20 @@ int main( int argc, char** argv )
         params.gravity   = 0.4f;
         params.drag      = 0.6f;
         tracker.SetEmitMode( mpp::EMIT_LIMBS );
+    }
+    // Hands / Head: emission restricted to the detail bones, with Body
+    // Attract on so the shader's limited attract range is exercised too.
+    const bool handsTest = std::strcmp( mode, "hands" ) == 0;
+    const bool headTest  = std::strcmp( mode, "head" ) == 0;
+    if( handsTest || headTest )
+    {
+        params.emitMode    = handsTest ? mpp::EMIT_HANDS : mpp::EMIT_HEAD;
+        params.attract     = 2.0f;
+        params.drag        = 2.5f;
+        params.turbulence  = 0.3f;
+        params.inherit     = 0.6f;
+        params.pointSize   = 4.0f;
+        tracker.SetEmitMode( mpp::EmitMode( params.emitMode ) );
     }
 
     const float dt = 1.0f/60.0f;
@@ -295,6 +373,8 @@ int main( int argc, char** argv )
     const char* outName = "headless_out.ppm";
     if( twoBodies )       outName = "headless_two.ppm";
     else if( hostileTest ) outName = "headless_hostile.ppm";
+    else if( handsTest )  outName = "headless_hands.ppm";
+    else if( headTest )   outName = "headless_head.ppm";
     else if( argc > 1 )   outName = "headless_alt.ppm";
     FILE* f = fopen( outName, "wb" );
     fprintf(f,"P6\n%d %d\n255\n",W,H);
@@ -303,6 +383,31 @@ int main( int argc, char** argv )
 
     bool ok = nonZeroPixels > 200;
     printf("%s\n", ok ? "PASS: particles rendered" : "FAIL: frame is empty");
+
+    if( handsTest || headTest )
+    {
+        // Where the light is. Hands: the figure's hands sit in the outer
+        // quarters, so the middle half (torso, legs, head) should be nearly
+        // dark. Head: the face is in the top fifth, so almost everything lit
+        // should be up there. GL rows count from the bottom.
+        long long inside = 0, lit = 0;
+        for( int y = 0; y < H; ++y )
+            for( int x = 0; x < W; ++x )
+            {
+                const unsigned char* p = &pixels[ ( y * W + x ) * 4 ];
+                if( !( p[0] || p[1] || p[2] ) ) continue;
+                ++lit;
+                const float u = ( x + 0.5f ) / W, vTop = 1.0f - ( y + 0.5f ) / H;
+                const bool in = handsTest ? ( u < 0.25f || u > 0.75f ) : ( vTop < 0.35f && u > 0.3f && u < 0.7f );
+                if( in ) ++inside;
+            }
+        const double share = lit > 0 ? double( inside ) / double( lit ) : 0.0;
+        printf( "%s: %.1f%% of lit pixels in the expected region\n", handsTest ? "hands" : "head", share * 100.0 );
+        const bool placed = share > 0.9;
+        printf( "%s\n", placed ? "PASS: particles stay on the selected part"
+                                : "FAIL: particles are coming from elsewhere" );
+        ok = ok && placed;
+    }
 
     if( resizeTest )
     {

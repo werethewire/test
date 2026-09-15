@@ -31,6 +31,7 @@ float Approach( float current, float target, float rate, float dt )
 
 float GroupWeight( int group, EmitMode mode )
 {
+	const bool detail = group == GROUP_FACE || group == GROUP_HANDS;
 	switch( mode )
 	{
 	case EMIT_LIMBS:
@@ -40,11 +41,19 @@ float GroupWeight( int group, EmitMode mode )
 	case EMIT_JOINTS:
 		// Joint mode still needs a non-empty table: the shader snaps the
 		// sampled point to the nearer bone end.
-		return 1.0f;
+		return detail ? 0.0f : 1.0f;
+	case EMIT_HANDS:
+		return group == GROUP_HANDS ? 1.0f : 0.0f;
+	case EMIT_HEAD:
+		return group == GROUP_HEAD || group == GROUP_FACE ? 1.0f : 0.0f;
 	case EMIT_WHOLE_BODY:
 	default:
 		// The head bones are short; without a boost they get almost nothing.
-		return group == GROUP_HEAD ? 1.6f : 1.0f;
+		// The face and hand detail stays out, so the body modes look exactly
+		// as they did before those bones existed.
+		if( detail )
+			return 0.0f;
+		return group == GROUP_HEAD || group == GROUP_NECK ? 1.6f : 1.0f;
 	}
 }
 }// namespace

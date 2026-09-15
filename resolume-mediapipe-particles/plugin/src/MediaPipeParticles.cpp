@@ -141,11 +141,15 @@ MediaPipeParticles::MediaPipeParticles()
 	AddSlider( PARAM_SPREAD, "Emit Spread", emission, 0.0f, 2.0f, 0.35f );
 	AddSlider( PARAM_INHERIT, "Inherit Motion", emission, 0.0f, 2.0f, 1.0f );
 
-	SetOptionParamInfo( PARAM_EMIT_MODE, "Emit From", 4, 0.0f );
+	// Values are the EmitMode numbers, which saved compositions store, so new
+	// entries only ever go on the end.
+	SetOptionParamInfo( PARAM_EMIT_MODE, "Emit From", 6, 0.0f );
 	SetParamElementInfo( PARAM_EMIT_MODE, 0, "Whole Body", 0.0f );
 	SetParamElementInfo( PARAM_EMIT_MODE, 1, "Limbs", 1.0f );
 	SetParamElementInfo( PARAM_EMIT_MODE, 2, "Torso", 2.0f );
 	SetParamElementInfo( PARAM_EMIT_MODE, 3, "Joints", 3.0f );
+	SetParamElementInfo( PARAM_EMIT_MODE, 4, "Hands", 4.0f );
+	SetParamElementInfo( PARAM_EMIT_MODE, 5, "Head", 5.0f );
 	SetParamGroup( PARAM_EMIT_MODE, emission );
 
 	SetParamInfo( PARAM_RESET, "Reset", FF_TYPE_EVENT, false );

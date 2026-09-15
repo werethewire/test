@@ -27,10 +27,17 @@ from pose_osc import (
 # Rest pose in normalised camera coordinates (origin top-left).
 BASE = {
     0: (0.50, 0.14),   # nose
+    # eyes (inner, centre, outer) and mouth corners, for Emit From = Head
+    1: (0.49, 0.125), 2: (0.48, 0.125), 3: (0.47, 0.125),
+    4: (0.51, 0.125), 5: (0.52, 0.125), 6: (0.53, 0.125),
+    9: (0.485, 0.17), 10: (0.515, 0.17),
     7: (0.46, 0.15), 8: (0.54, 0.15),
     11: (0.42, 0.30), 12: (0.58, 0.30),
     13: (0.32, 0.42), 14: (0.68, 0.42),
     15: (0.26, 0.55), 16: (0.74, 0.55),
+    # pinky, index, thumb, for Emit From = Hands
+    17: (0.235, 0.585), 19: (0.245, 0.60), 21: (0.27, 0.59),
+    18: (0.765, 0.585), 20: (0.755, 0.60), 22: (0.73, 0.59),
     23: (0.45, 0.58), 24: (0.55, 0.58),
     25: (0.44, 0.76), 26: (0.56, 0.76),
     27: (0.43, 0.93), 28: (0.57, 0.93),
@@ -54,10 +61,11 @@ def synth_pose(t: float, motion: float, shift_x: float = 0.0,
         y = 0.5 + (y - 0.5) * scale
         x += sway
         y += bob
-        if index in (13, 15):        # left arm swings up
+        # The fingers ride along with their wrist.
+        if index in (13, 15, 17, 19, 21):    # left arm swings up
             y -= abs(swing) * 1.6
             x -= swing * 0.5
-        if index in (14, 16):        # right arm swings the other way
+        if index in (14, 16, 18, 20, 22):    # right arm swings the other way
             y += swing * 0.8
             x += swing * 0.5
         if index in (25, 27, 31):

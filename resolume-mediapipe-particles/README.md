@@ -38,7 +38,7 @@
 | `plugin/src/Thumbnail.*` | Resolume のソースブラウザに出すサムネイルを CPU 生成 |
 | `plugin/src/TrackerLauncher.*` | プラグインから pose_osc.py を起動・監視。Python 探索、カメラ一覧(DirectShow) |
 | `plugin/tests/test_pose.cpp` | GL を必要としない部分のユニットテスト |
-| `plugin/tests/headless_render.cpp` | EGL でシェーダーを実際に走らせる描画チェック(Linux) |
+| `plugin/tests/headless_render.cpp` | シェーダーを実際に走らせる描画チェック(Linux は EGL、Windows は隠しウィンドウ) |
 
 ## 必要環境
 
@@ -238,7 +238,7 @@ Resolume 上では **Emission / Forces / Look / Tracking** の 4 グループに
 | Life Random | 0 | 1 | 0.5 | 寿命のばらつき。0 にすると全体が脈打つ |
 | Emit Spread | 0 | 2 | 0.35 | 発生時のランダム初速 |
 | Inherit Motion | 0 | 2 | 1.0 | 関節速度をどれだけ受け継ぐか。動きの表現の中核 |
-| Emit From | Whole Body / Limbs / Torso / Joints | | Whole Body | 発生源の絞り込み |
+| Emit From | Whole Body / Limbs / Torso / Joints / Hands / Head | | Whole Body | 発生源の絞り込み。Hands は手首から指先だけ、Head は顔(目・鼻・口・耳)だけ(下記) |
 | Reset | — | — | — | パーティクルを全消去して再生成 |
 
 **Forces** — 出たあとどう動くか
@@ -282,6 +282,8 @@ Resolume のパラメータは OSC / MIDI にそのままマップできるの�
 
 - **輪郭のきらめき**: Drag 高め、Turbulence 低め、Life 短め、Emit From = Whole Body
 - **軌跡を引く翼**: Trails 0.6、Body Attract 高め、Emit From = Limbs、Color By = Speed
+- **手だけが光る**: Emit From = Hands、Body Attract 1.5 前後、Drag 高め、Size 小さめ(手の動きの軌跡を描くなら Trails も)
+- **顔だけが浮かぶ**: Emit From = Head、Zoom と Position で顔を画面中央に大きく、Life 短め、Emit Spread 低め
 - **煙のように崩れる体**: Gravity 負、Drag 低め、Turbulence 高め、Life 長め
 - **奥行きを強調**: Depth 2.0 前後、Size 小さめ、Size Random 低め(遠近差が読みやすくなる)
 
@@ -325,7 +327,7 @@ Resolume のパラメータは OSC / MIDI にそのままマップできるの�
 - **複数人は 1 本の CDF で扱う**: 全員の骨を 1 つの累積分布にまとめているため、
   シェーダー側は乱数 1 つで「誰のどの骨か」まで決まります。分岐もループも増えません。
   presence を重みに掛けているので、退場中の人の取り分は自動的に他へ回ります。
-- **ユニフォーム量の見積もり**: 3 人分で 651 コンポーネント。
+- **ユニフォーム量の見積もり**: 3 人分で 714 コンポーネント(手と顔の骨を足す前は 651)。
   OpenGL 4.1 のフラグメントシェーダー保証値 1024 に収まる範囲で `MAX_PERSONS` を決めています。
   これ以上増やすなら関節データをテクスチャに移す必要があります。
 - **サムネイルは実行時に生成**: 骨格テーブルから CPU で描いているので、
@@ -395,6 +397,9 @@ Resolume のパラメータは OSC / MIDI にそのままマップできるの�
   `py -3.10` を自動で選び(3.12 / 3.11 は mediapipe 無しで除外)、空白を含む `Extra Effects` のパスから起動、
   1 秒で Running、`USB Video Device`(DirectShow 4 番)から約 26 fps、3 秒間の 50 更新中 46 で人を検出。
   最後の参照を離すと 1.5 秒間の受信 0、python プロセスも残らないことを確認。
+- `Emit From` = Hands / Head を、この PC の GPU(RTX 4070、GL 4.1 core)で `mpp_headless hands` / `head` として描画:
+  光ったピクセルの 99.8% が手の領域、100% が顔の領域に収まる。既存の Whole Body / alt / two の出力画像は、
+  手と顔の骨を足す前のコミット(579664d)とバイト単位で一致し、既存モードの見た目が変わらないことを確認。
 - DirectShow のカメラ一覧(8 台)と OpenCV `CAP_DSHOW` の番号が一致すること(0〜7 は開けて 8 は開けない、
   解像度と輝度が各機器と対応)。
 
@@ -418,6 +423,7 @@ Resolume のパラメータは OSC / MIDI にそのままマップできるの�
   (輝度が通常の約 3 倍、`Reset` でも戻らない)。同じ入力の順番を新しいインスタンスで再現しても起きず、
   新しいインスタンスを 10 分以上動かしても起きていないため、原因は特定できていません。
   本番前に長時間の通し確認をしてください。
+- Arena の中での `Emit From` = Hands / Head(追加時点で Arena 上にこのソースのクリップが再生中で、DLL を差し替えられなかった)。
 - macOS 実機。
 
 ### CI
@@ -426,7 +432,7 @@ Resolume のパラメータは OSC / MIDI にそのままマップできるの�
 
 | ジョブ | 内容 | 状態 |
 | --- | --- | --- |
-| Linux | ビルド + `ctest` + ヘッドレス描画 5 構成 + トラッカーの構文チェック | 通過 |
+| Linux | ビルド + `ctest` + ヘッドレス描画 7 構成 + トラッカーの構文チェック | 通過(Hands / Head の 2 構成は追加直後で CI 未実行) |
 | Windows | vcpkg で GLEW を入れて x64 DLL をビルド + `ctest` + `dumpbin` で `plugMain` を確認 | 通過 |
 | macOS | Universal バンドルをビルド + `ctest` + `lipo` / `nm` でアーキテクチャと `plugMain` を確認 | 通過 |
 
@@ -453,6 +459,11 @@ CI を組んだことで、この環境では再現できない実機固有の�
 
 ## 既知の制約
 
+- `Hands` / `Head` は全身トラッキング(MediaPipe Pose)の点から出しています。専用の手・顔モデルではないので、
+  体(少なくとも上半身)が映っていないと検出されず、手や顔だけのアップには向きません。
+  手は 1 本につき手首・親指・人差し指・小指の 4 点、顔は目・鼻・口・耳の 11 点で、指の形までは出ません。
+  手の点が見えていないときは、手以外から出すのではなく何も出しません。
+- 全身が映る距離だと手や顔は画面上で小さいので、`Zoom` / `Position X/Y` で寄せるか、`Size` を上げてください。
 - 人数は最大 3 人です。増やすには `PoseProtocol.h` の `MAX_PERSONS` と
   `pose_osc.py` の同名定数を揃えて変更しますが、4 人を超えるとユニフォーム量が
   OpenGL 4.1 の保証値に近づくため、関節データのテクスチャ化が必要になります。

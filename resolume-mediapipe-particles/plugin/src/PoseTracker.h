@@ -51,6 +51,8 @@ enum EmitMode : int
 	EMIT_LIMBS      = 1,
 	EMIT_TORSO      = 2,
 	EMIT_JOINTS     = 3,
+	EMIT_HANDS      = 4,///< wrists to fingertips only
+	EMIT_HEAD       = 5,///< face and nose-to-ear, no neck
 };
 
 /// Everything tracked about a single body.

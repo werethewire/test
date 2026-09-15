@@ -143,9 +143,8 @@ endif()
 
 # Linux-only smoke test that actually runs the shaders against Mesa. Needs
 # EGL and GLEW; not part of a normal Windows/macOS plugin build.
-option( MPP_BUILD_HEADLESS_TEST "Build the headless GL render check (Linux)" OFF )
-if( MPP_BUILD_HEADLESS_TEST AND NOT WIN32 AND NOT APPLE )
-	find_package( OpenGL REQUIRED )
+option( MPP_BUILD_HEADLESS_TEST "Build the headless GL render check (Linux: EGL, Windows: hidden window)" OFF )
+if( MPP_BUILD_HEADLESS_TEST AND NOT APPLE )
 	find_package( GLEW REQUIRED )
 	add_executable( mpp_headless
 		tests/headless_render.cpp
@@ -154,5 +153,10 @@ if( MPP_BUILD_HEADLESS_TEST AND NOT WIN32 AND NOT APPLE )
 		src/OscPose.cpp
 	)
 	target_include_directories( mpp_headless PRIVATE src )
-	target_link_libraries( mpp_headless PRIVATE ffgl::sdk OpenGL::GL GLEW::GLEW EGL Threads::Threads )
+	if( WIN32 )
+		target_link_libraries( mpp_headless PRIVATE ffgl::sdk GLEW::GLEW opengl32 Ws2_32 Threads::Threads )
+	else()
+		find_package( OpenGL REQUIRED )
+		target_link_libraries( mpp_headless PRIVATE ffgl::sdk OpenGL::GL GLEW::GLEW EGL Threads::Threads )
+	endif()
 endif()

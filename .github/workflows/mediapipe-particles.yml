@@ -51,6 +51,8 @@ jobs:
           ./build/mpp_headless two
           ./build/mpp_headless resize
           ./build/mpp_headless hostile
+          ./build/mpp_headless hands
+          ./build/mpp_headless head
 
       - name: Check the tracker imports and its CLI parses
         run: |

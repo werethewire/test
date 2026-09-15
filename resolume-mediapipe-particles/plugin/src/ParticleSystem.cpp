@@ -115,6 +115,10 @@ uniform float uBodyPresence[ PERSON_COUNT ];
 // One cumulative table across all bodies, so the particle budget is split by
 // bone length rather than per person.
 uniform float uBoneCdf[ CDF_COUNT ];
+// Bones Body Attract considers: [first, end), optionally only those emitting.
+uniform int uAttractFirst;
+uniform int uAttractEnd;
+uniform int uAttractEmittersOnly;
 
 const ivec2 kBone[ BONE_COUNT ] = BONE_TABLE;
 
@@ -159,13 +163,22 @@ vec2 bodyForce( vec2 p )
 		if( uBodyPresence[ person ] < 0.01 )
 			continue;
 		int base = person * LANDMARK_COUNT;
-		for( int i = 0; i < BONE_COUNT; ++i )
+		for( int i = uAttractFirst; i < uAttractEnd; ++i )
 		{
 			ivec2 b = kBone[ i ];
 			int ia  = base + b.x;
 			int ib  = base + b.y;
 			if( min( uJointVis[ ia ], uJointVis[ ib ] ) < 0.35 )
 				continue;
+			if( uAttractEmittersOnly != 0 )
+			{
+				// Zero width in the emission table: this bone is not emitting
+				// (the neck inside the head range, say), so it should not pull.
+				int slot = person * BONE_COUNT + i;
+				float lo = slot > 0 ? uBoneCdf[ slot - 1 ] : 0.0;
+				if( uBoneCdf[ slot ] - lo <= 0.0 )
+					continue;
+			}
 			vec2 c  = closestPointOnSegment( p, uJoint[ ia ].xy, uJoint[ ib ].xy );
 			float d = distance( p, c );
 			if( d < bestD )
@@ -838,6 +851,25 @@ void ParticleSystem::DrawFrame( const PoseTracker& pose,
 	SetUniform1f( simProgram, "uPresence", pose.Presence() );
 	SetUniform1i( simProgram, "uEmitMode", params.emitMode );
 	SetUniform1i( simProgram, "uHasEmitters", pose.HasEmitters() ? 1 : 0 );
+
+	// Hands-only particles should cling to the hands, not to the rest of the
+	// body they happen to be near. The body modes keep attracting to the whole
+	// body skeleton as they always have, and never pay for the detail bones.
+	int attractFirst = 0, attractEnd = NUM_BODY_BONES, attractEmittersOnly = 0;
+	if( params.emitMode == EMIT_HANDS )
+	{
+		attractFirst = FIRST_HAND_BONE;
+		attractEnd   = NUM_BONES;
+	}
+	else if( params.emitMode == EMIT_HEAD )
+	{
+		attractFirst        = FIRST_HEAD_BONE;
+		attractEnd          = FIRST_HAND_BONE;
+		attractEmittersOnly = 1;// skips the two neck bones in that range
+	}
+	SetUniform1i( simProgram, "uAttractFirst", attractFirst );
+	SetUniform1i( simProgram, "uAttractEnd", attractEnd );
+	SetUniform1i( simProgram, "uAttractEmittersOnly", attractEmittersOnly );
 
 	// Joint uniforms, every body back to back: xy position, zw velocity.
 	const int jointCount = NUM_LANDMARKS * MAX_PERSONS;

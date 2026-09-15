@@ -474,6 +474,134 @@ static void TestEmissionTable()
 	CHECK( !none.HasEmitters() );
 }
 
+/// FillTPose plus the face and finger points, which it leaves at the centre.
+static void FillTPoseWithDetail( float* lm )
+{
+	FillTPose( lm );
+	auto set = [ & ]( int idx, float x, float y ) {
+		lm[ idx * 4 + 0 ] = x;
+		lm[ idx * 4 + 1 ] = y;
+	};
+	set( mpp::LM_LEFT_EYE_INNER, 0.49f, 0.13f );
+	set( mpp::LM_LEFT_EYE, 0.48f, 0.13f );
+	set( mpp::LM_LEFT_EYE_OUTER, 0.47f, 0.13f );
+	set( mpp::LM_RIGHT_EYE_INNER, 0.51f, 0.13f );
+	set( mpp::LM_RIGHT_EYE, 0.52f, 0.13f );
+	set( mpp::LM_RIGHT_EYE_OUTER, 0.53f, 0.13f );
+	set( mpp::LM_MOUTH_LEFT, 0.485f, 0.18f );
+	set( mpp::LM_MOUTH_RIGHT, 0.515f, 0.18f );
+	set( mpp::LM_LEFT_PINKY, 0.14f, 0.32f );
+	set( mpp::LM_LEFT_INDEX, 0.14f, 0.28f );
+	set( mpp::LM_LEFT_THUMB, 0.16f, 0.26f );
+	set( mpp::LM_RIGHT_PINKY, 0.86f, 0.32f );
+	set( mpp::LM_RIGHT_INDEX, 0.86f, 0.28f );
+	set( mpp::LM_RIGHT_THUMB, 0.84f, 0.26f );
+}
+
+static float BoneWidth( const float* cdf, int slot )
+{
+	return cdf[ slot ] - ( slot == 0 ? 0.0f : cdf[ slot - 1 ] );
+}
+
+static void TestBoneRanges()
+{
+	// The shader limits Body Attract by these ranges, and the body modes
+	// depend on the first bones keeping their order.
+	CHECK( mpp::NUM_BODY_BONES == mpp::FIRST_FACE_BONE );
+	CHECK( mpp::FIRST_FACE_BONE < mpp::FIRST_HAND_BONE && mpp::FIRST_HAND_BONE < mpp::NUM_BONES );
+	for( int i = 0; i < mpp::NUM_BONES; ++i )
+	{
+		const int g = mpp::BONES[ i ].group;
+		if( i < mpp::FIRST_HEAD_BONE )
+			CHECK( g == mpp::GROUP_TORSO || g == mpp::GROUP_LIMBS );
+		else if( i < mpp::FIRST_FACE_BONE )
+			CHECK( g == mpp::GROUP_HEAD || g == mpp::GROUP_NECK );
+		else if( i < mpp::FIRST_HAND_BONE )
+			CHECK( g == mpp::GROUP_FACE );
+		else
+			CHECK( g == mpp::GROUP_HANDS );
+	}
+}
+
+static void TestEmitHandsAndHead()
+{
+	float lm[ mpp::POSE_FLOAT_COUNT ];
+	FillTPoseWithDetail( lm );
+	mpp::PoseUpdate frame = SingleBody( lm );
+
+	auto settle = [ &frame ]( mpp::EmitMode mode, mpp::PoseTracker& t ) {
+		t.SetSmoothing( 0.0f );
+		t.SetEmitMode( mode );
+		for( int i = 0; i < 120; ++i )
+			t.Update( &frame, 1.0f / 60.0f );
+	};
+
+	// Hands: every hand bone emits, nothing else does.
+	mpp::PoseTracker hands;
+	settle( mpp::EMIT_HANDS, hands );
+	CHECK( hands.HasEmitters() );
+	for( int i = 0; i < mpp::NUM_BONES; ++i )
+	{
+		const float w = BoneWidth( hands.BoneCdf(), i );
+		if( mpp::BONES[ i ].group == mpp::GROUP_HANDS )
+			CHECK( w > 0.0f );
+		else
+			CHECK_NEAR( w, 0.0f, 1e-6 );
+	}
+
+	// Head: face and nose-to-ear bones, but not the neck.
+	mpp::PoseTracker head;
+	settle( mpp::EMIT_HEAD, head );
+	CHECK( head.HasEmitters() );
+	for( int i = 0; i < mpp::NUM_BONES; ++i )
+	{
+		const int g   = mpp::BONES[ i ].group;
+		const float w = BoneWidth( head.BoneCdf(), i );
+		if( g == mpp::GROUP_FACE || g == mpp::GROUP_HEAD )
+			CHECK( w > 0.0f );
+		else
+			CHECK_NEAR( w, 0.0f, 1e-6 );
+	}
+
+	// Whole Body must hand out exactly the shares it did before the detail
+	// bones existed: length weighted over the body bones, head and neck x1.6.
+	mpp::PoseTracker body;
+	settle( mpp::EMIT_WHOLE_BODY, body );
+	const mpp::JointState* j = body.Joints();
+	float expected[ mpp::NUM_BODY_BONES ];
+	float total = 0.0f;
+	for( int i = 0; i < mpp::NUM_BODY_BONES; ++i )
+	{
+		const mpp::Bone& b = mpp::BONES[ i ];
+		float dx           = j[ b.b ].x - j[ b.a ].x;
+		float dy           = j[ b.b ].y - j[ b.a ].y;
+		float boost        = b.group == mpp::GROUP_HEAD || b.group == mpp::GROUP_NECK ? 1.6f : 1.0f;
+		expected[ i ]      = std::sqrt( dx * dx + dy * dy ) * boost;
+		total += expected[ i ];
+	}
+	for( int i = 0; i < mpp::NUM_BONES; ++i )
+	{
+		const float w = BoneWidth( body.BoneCdf(), i );
+		if( i < mpp::NUM_BODY_BONES )
+			CHECK_NEAR( w, expected[ i ] / total, 1e-4 );
+		else
+			CHECK_NEAR( w, 0.0f, 1e-6 );
+	}
+
+	// Fingers out of view: Hands has nothing to emit from, rather than
+	// falling back to some other part of the body.
+	mpp::PoseUpdate noFingers = frame;
+	for( int idx : { mpp::LM_LEFT_PINKY, mpp::LM_LEFT_INDEX, mpp::LM_LEFT_THUMB,
+					 mpp::LM_RIGHT_PINKY, mpp::LM_RIGHT_INDEX, mpp::LM_RIGHT_THUMB } )
+		noFingers.frames[ 0 ].lm[ idx * 4 + 3 ] = 0.0f;
+	mpp::PoseTracker hidden;
+	hidden.SetSmoothing( 0.0f );
+	hidden.SetEmitMode( mpp::EMIT_HANDS );
+	for( int i = 0; i < 120; ++i )
+		hidden.Update( &noFingers, 1.0f / 60.0f );
+	CHECK( !hidden.HasEmitters() );
+}
+
 static void TestPresenceEnvelope()
 {
 	float lm[ mpp::POSE_FLOAT_COUNT ];
@@ -1119,6 +1247,8 @@ int main()
 	TestOneEuroTracksAndSmooths();
 	TestTrackerMappingAndMirror();
 	TestEmissionTable();
+	TestBoneRanges();
+	TestEmitHandsAndHead();
 	TestPresenceEnvelope();
 	TestMotionEnergy();
 	TestDepth();
