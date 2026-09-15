@@ -141,7 +141,7 @@ curl -LO https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_la
 | パラメータ | 既定 | 説明 |
 | --- | --- | --- |
 | Tracker | on | 自動起動の有無。表示名に状態が出ます(`Tracker: Running` など、下表) |
-| Camera | 先頭のカメラ | Windows は DirectShow のカメラ名一覧。並び順は OpenCV の `CAP_DSHOW` の番号と同じです |
+| Camera | 最初の実カメラ | Windows は DirectShow のカメラ名一覧。並び順は OpenCV の `CAP_DSHOW` の番号と同じです。既定は NDI / OBS / 「仮想」などの仮想カメラを飛ばした最初の 1 台(仮想カメラは入力が無いと真っ黒なため) |
 | People | 1 | 同時に追う人数(1〜3) |
 | Preview Window | off | 検出した骨格を描いたウィンドウを出す |
 | Restart Tracker | — | トラッカーを起動し直し、カメラ一覧と Python も探し直す(カメラを後から挿したとき、mediapipe を入れたあと) |
@@ -398,9 +398,20 @@ Resolume のパラメータは OSC / MIDI にそのままマップできるの�
 - DirectShow のカメラ一覧(8 台)と OpenCV `CAP_DSHOW` の番号が一致すること(0〜7 は開けて 8 は開けない、
   解像度と輝度が各機器と対応)。
 
+- Arena の中での自動起動(Arena 再起動後に確認):
+  - 再生していないクリップに置いただけでトラッカーが起動し、`Camera` に 8 台の名前、`People` / `Preview Window` /
+    `Restart Tracker` / `Tracker` が並ぶ。プラグインの登録(Sources への表示)だけでは起動しない。
+  - `Camera` を変えると `--device 4` で起動し直す。`Tracker` を off でプロセスが消え、on で再起動。
+  - 2 つ目のクリップを既定値のまま置いて再生しても、動いているトラッカーはカメラ 4 のまま。
+  - 片方を消しても動き続け、最後のクリップを消すとプロセスが消える。
+  - 既定カメラは、この PC では 0〜3 番の NDI Webcam を飛ばして `USB Video Device`(4 番)になった。
+  - `MediaPipeParticles\` サブフォルダも Arena に走査されるが、プラグインとしては 0 件で無害。
+
 確認できていないこと:
 
-- **Arena の中からの自動起動と Camera パラメータ**(DLL 差し替えに Arena の再起動が必要なため未実施)。
+- Arena の画面上で `Tracker: Running` などの表示名が更新されること(REST からはパラメータ名しか見えないため)。
+- Arena の出力で、カメラに人が映った状態のパーティクル(確認時はカメラの前に人がいなかった。
+  同じカメラでの検出はプラグイン外の通しテストで、描画は動画入力で確認済み)。
 - 手動起動の `pose_osc.py` を既定の `--device 0` で試した際に真っ黒だったのは、0 番が
   `NDI Webcam Video 1`(NDI 入力なし)だったためで、カメラの故障ではありません。
 - 最初に作ったインスタンスが途中から、粒が画面全体に噴き出すような見た目に崩れました

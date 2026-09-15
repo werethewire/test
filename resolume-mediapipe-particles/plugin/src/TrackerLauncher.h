@@ -78,6 +78,12 @@ std::vector< std::string > DefaultTrackerDirs();
 /// return an empty list; the caller falls back to plain indices.
 std::vector< std::string > EnumerateCameras();
 
+/// Index to offer as the default: the first camera that does not look like a
+/// virtual one (NDI, OBS, phone links...). Those register ahead of the real
+/// webcam on many machines and deliver black until something feeds them.
+/// Falls back to 0.
+int PreferredCameraIndex( const std::vector< std::string >& names );
+
 class ChildProcess;
 
 class TrackerLauncher

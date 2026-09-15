@@ -196,7 +196,9 @@ MediaPipeParticles::MediaPipeParticles()
 	SetParamGroup( PARAM_TRACKER, camera );
 
 	std::vector< std::string > cameraNames = CameraNames( cameraListGeneration );
-	SetOptionParamInfo( PARAM_CAMERA, "Camera", unsigned( cameraNames.size() ), 0.0f );
+	const int defaultCamera                = mpp::PreferredCameraIndex( cameraNames );
+	raw[ PARAM_CAMERA ]                    = float( defaultCamera );
+	SetOptionParamInfo( PARAM_CAMERA, "Camera", unsigned( cameraNames.size() ), float( defaultCamera ) );
 	for( size_t i = 0; i < cameraNames.size(); ++i )
 		SetParamElementInfo( PARAM_CAMERA, unsigned( i ), cameraNames[ i ].c_str(), float( i ) );
 	SetParamGroup( PARAM_CAMERA, camera );

@@ -153,8 +153,11 @@ std::string LogDirectory()
 #endif
 }
 
-void AppendToLog( const std::string& path, const std::string& text )
+void AppendToLog( const std::string& path, const std::string& message )
 {
+	// pose_osc.py rewrites its status line with '\r' and never ends it, so
+	// start on a fresh line or this lands in the middle of that one.
+	const std::string text = "\n" + message;
 #if defined( _WIN32 )
 	HANDLE file = CreateFileW( Widen( path ).c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
 							   OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr );
@@ -846,6 +849,37 @@ void TrackerLauncher::Run()
 }
 
 // ------------------------------------------------------------ cameras
+
+int PreferredCameraIndex( const std::vector< std::string >& names )
+{
+	// Matched case-insensitively against the DirectShow friendly name. The
+	// Japanese entry is how Windows labels phone-as-webcam devices.
+	static const char* const kVirtual[] = {
+		"ndi", "obs", "virtual", "vmix", "xsplit", "snap camera", "manycam", "droidcam", "iriun",
+		"\xE4\xBB\xAE\xE6\x83\xB3",// 仮想
+	};
+	for( size_t i = 0; i < names.size(); ++i )
+	{
+		std::string lower = names[ i ];
+		for( char& c : lower )
+		{
+			if( c >= 'A' && c <= 'Z' )
+				c = char( c - 'A' + 'a' );
+		}
+		bool isVirtual = false;
+		for( const char* marker : kVirtual )
+		{
+			if( lower.find( marker ) != std::string::npos )
+			{
+				isVirtual = true;
+				break;
+			}
+		}
+		if( !isVirtual )
+			return int( i );
+	}
+	return 0;
+}
 
 std::vector< std::string > EnumerateCameras()
 {

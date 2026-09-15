@@ -1010,6 +1010,24 @@ static void TestFindTrackerFiles()
 	CHECK( files.model == complete + sep + "pose_landmarker_full.task" );
 }
 
+static void TestPreferredCamera()
+{
+	// The list this machine actually reports: four NDI virtual inputs ahead of
+	// the real webcam, which is what made camera 0 a black default.
+	std::vector< std::string > here = {
+		"NDI Webcam Video 1", "NDI Webcam Video 2", "NDI Webcam Video 3", "NDI Webcam Video 4",
+		"USB Video Device",
+		"OPPO Reno7 A (Windows \xE4\xBB\xAE\xE6\x83\xB3\xE3\x82\xAB\xE3\x83\xA1\xE3\x83\xA9)",
+		"Camera (NVIDIA Broadcast)", "OBS Virtual Camera",
+	};
+	CHECK( mpp::PreferredCameraIndex( here ) == 4 );
+	CHECK( mpp::PreferredCameraIndex( { "OBS Virtual Camera", "Integrated Webcam" } ) == 1 );
+	CHECK( mpp::PreferredCameraIndex( { "Logitech BRIO" } ) == 0 );
+	// Nothing but virtual cameras, or nothing at all: still a valid index.
+	CHECK( mpp::PreferredCameraIndex( { "NDI Webcam Video 1", "OBS Virtual Camera" } ) == 0 );
+	CHECK( mpp::PreferredCameraIndex( {} ) == 0 );
+}
+
 static void TestEnumerateCameras()
 {
 	// Nothing to assert about the machine's hardware; this proves the
@@ -1113,6 +1131,7 @@ int main()
 	TestQuoteWindowsArgument();
 	TestBuildTrackerArguments();
 	TestFindTrackerFiles();
+	TestPreferredCamera();
 	TestEnumerateCameras();
 	TestLauncherEndToEnd();
 
