@@ -54,6 +54,8 @@ add_library( MediaPipeParticles MODULE
 	src/PoseTracker.h
 	src/PoseProtocol.h
 	src/GLInclude.h
+	src/Thumbnail.cpp
+	src/Thumbnail.h
 )
 
 target_include_directories( MediaPipeParticles PRIVATE src )

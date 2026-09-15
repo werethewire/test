@@ -26,43 +26,69 @@ public:
 	FFResult SetTextParameter( unsigned int index, const char* value ) override;
 	char* GetTextParameter( unsigned int index ) override;
 
+	/// Resolume lays parameters out in index order and starts a new section
+	/// when the group name changes, so each group's indices stay contiguous.
 	enum ParamIndex : unsigned int
 	{
+		// Emission
 		PARAM_COUNT_          = 0, ///< number of particles
 		PARAM_LIFE            = 1,
 		PARAM_LIFE_VAR        = 2,
 		PARAM_SPREAD          = 3,
 		PARAM_INHERIT         = 4,
-		PARAM_GRAVITY         = 5,
-		PARAM_TURBULENCE      = 6,
-		PARAM_TURB_SCALE      = 7,
-		PARAM_DRAG            = 8,
-		PARAM_ATTRACT         = 9,
-		PARAM_SIZE            = 10,
-		PARAM_SIZE_VAR        = 11,
-		PARAM_DEPTH           = 12,
-		PARAM_TRAILS          = 13,
-		PARAM_BRIGHTNESS      = 14,
-		PARAM_OPACITY         = 15,
-		PARAM_COLOR_A_R       = 16,
-		PARAM_COLOR_A_G       = 17,
-		PARAM_COLOR_A_B       = 18,
-		PARAM_COLOR_B_R       = 19,
-		PARAM_COLOR_B_G       = 20,
-		PARAM_COLOR_B_B       = 21,
-		PARAM_COLOR_MODE      = 22,
-		PARAM_EMIT_MODE       = 23,
-		PARAM_SMOOTHING       = 24,
-		PARAM_MIRROR          = 25,
-		PARAM_ZOOM            = 26,
-		PARAM_POS_X           = 27,
-		PARAM_POS_Y           = 28,
-		PARAM_RESET           = 29,
+		PARAM_EMIT_MODE       = 5,
+		PARAM_RESET           = 6,
+		// Forces
+		PARAM_GRAVITY         = 7,
+		PARAM_TURBULENCE      = 8,
+		PARAM_TURB_SCALE      = 9,
+		PARAM_DRAG            = 10,
+		PARAM_ATTRACT         = 11,
+		// Look
+		PARAM_SIZE            = 12,
+		PARAM_SIZE_VAR        = 13,
+		PARAM_DEPTH           = 14,
+		PARAM_TRAILS          = 15,
+		PARAM_BRIGHTNESS      = 16,
+		PARAM_OPACITY         = 17,
+		PARAM_COLOR_A_R       = 18,
+		PARAM_COLOR_A_G       = 19,
+		PARAM_COLOR_A_B       = 20,
+		PARAM_COLOR_B_R       = 21,
+		PARAM_COLOR_B_G       = 22,
+		PARAM_COLOR_B_B       = 23,
+		PARAM_COLOR_MODE      = 24,
+		// Tracking
+		PARAM_SMOOTHING       = 25,
+		PARAM_MIRROR          = 26,
+		PARAM_ZOOM            = 27,
+		PARAM_POS_X           = 28,
+		PARAM_POS_Y           = 29,
 		PARAM_OSC_PORT        = 30,
 		PARAM_LAST
 	};
 
 private:
+	/// Real-world range behind a 0..1 slider. Parameters are declared as plain
+	/// FF_TYPE_STANDARD rather than with a host range, because every FFGL 2
+	/// host agrees on the meaning of 0..1 and not all of them honour ranges.
+	struct Range
+	{
+		float min = 0.0f;
+		float max = 1.0f;
+	};
+
+	/// Declares a slider's name, group, range and default in one place, so
+	/// they cannot drift apart when parameters are reordered.
+	void AddSlider( unsigned int index, const char* name, const char* group,
+					float minValue, float maxValue, float defaultValue );
+	/// Same, for one channel of a colour picker (already 0..1).
+	void AddColor( unsigned int index, const char* name, const char* group,
+				   unsigned int type, float defaultValue );
+
+	float Mapped( unsigned int index ) const;
+	float Normalised( unsigned int index, float value ) const;
+
 	void ApplyPortFromText();
 	void PushParamsToTracker();
 	mpp::ParticleParams BuildParticleParams() const;
@@ -71,12 +97,15 @@ private:
 	mpp::PoseTracker tracker;
 	mpp::ParticleSystem particles;
 
-	// Raw 0..1 slider values, kept so GetFloatParameter round-trips exactly.
+	Range ranges[ PARAM_LAST ];
+	// Raw slider values as the host sent them, kept so GetFloatParameter
+	// round-trips exactly.
 	float raw[ PARAM_LAST ] = { 0.0f };
 
-	std::string oscPortText = "9010";
-	uint16_t requestedPort  = mpp::DEFAULT_PORT;
-	bool portDirty          = true;
+	std::string oscPortText  = "9010";
+	uint16_t requestedPort   = mpp::DEFAULT_PORT;
+	bool portDirty           = true;
+	float sinceBindAttempt   = 0.0f;
 
 	std::chrono::steady_clock::time_point lastFrameTime;
 	bool haveLastFrameTime = false;

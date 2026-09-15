@@ -31,6 +31,52 @@
 	#include <unistd.h>
 #endif
 
+#if defined( _WIN32 )
+using RawSocket = SOCKET;
+static const RawSocket kNoSocket = INVALID_SOCKET;
+#else
+using RawSocket = int;
+static const RawSocket kNoSocket = -1;
+#endif
+
+/// Holds a UDP port open so the receiver's bind has to fail.
+static RawSocket OccupyUdpPort( uint16_t port )
+{
+#if defined( _WIN32 )
+	WSADATA wsa;
+	WSAStartup( MAKEWORD( 2, 2 ), &wsa );
+#endif
+	RawSocket s = ::socket( AF_INET, SOCK_DGRAM, IPPROTO_UDP );
+	if( s == kNoSocket )
+		return kNoSocket;
+	sockaddr_in addr;
+	std::memset( &addr, 0, sizeof( addr ) );
+	addr.sin_family      = AF_INET;
+	addr.sin_port        = htons( port );
+	addr.sin_addr.s_addr = htonl( INADDR_ANY );
+	if( ::bind( s, reinterpret_cast< sockaddr* >( &addr ), sizeof( addr ) ) != 0 )
+	{
+#if defined( _WIN32 )
+		::closesocket( s );
+#else
+		::close( s );
+#endif
+		return kNoSocket;
+	}
+	return s;
+}
+
+static void CloseRawSocket( RawSocket s )
+{
+	if( s == kNoSocket )
+		return;
+#if defined( _WIN32 )
+	::closesocket( s );
+#else
+	::close( s );
+#endif
+}
+
 /// Fire one datagram at 127.0.0.1:port, so the receiver test covers the real
 /// socket path rather than just the parser.
 static bool SendUdpLoopback( uint16_t port, const char* data, size_t len )
@@ -680,6 +726,67 @@ static void TestReceiverPerPerson()
 	rx.Stop();
 }
 
+static void TestReceiverRebindsAfterAFailedStart()
+{
+	// A bind can fail when a composition loads: another instance of the plugin
+	// is still shutting down, or the OS has not released the socket. The
+	// plugin retries on a timer, which is only worth anything if a failed
+	// Start leaves the receiver in a state a later Start can recover from.
+	uint16_t port    = 0;
+	RawSocket blocker = kNoSocket;
+	for( uint16_t candidate = 19110; candidate < 19160; ++candidate )
+	{
+		blocker = OccupyUdpPort( candidate );
+		if( blocker != kNoSocket )
+		{
+			port = candidate;
+			break;
+		}
+	}
+	if( port == 0 )
+	{
+		std::printf( "SKIP rebind test (no bindable port)\n" );
+		return;
+	}
+
+	mpp::PoseReceiver rx;
+	if( rx.Start( port ) )
+	{
+		// Some platforms let a second socket share the port; there is no
+		// failure to recover from there.
+		std::printf( "SKIP rebind test (this platform allows a shared bind)\n" );
+		rx.Stop();
+		CloseRawSocket( blocker );
+		return;
+	}
+	CHECK( !rx.IsListening() );
+
+	CloseRawSocket( blocker );
+
+	// Same receiver, same port, now free: the retry has to take.
+	CHECK( rx.Start( port ) );
+	CHECK( rx.IsListening() );
+	CHECK( rx.Port() == port );
+
+	float lm[ mpp::POSE_FLOAT_COUNT ];
+	FillTPose( lm );
+	auto packet = MakePosePacket( 4242, lm );
+	CHECK( SendUdpLoopback( port, packet.data(), packet.size() ) );
+
+	mpp::PoseUpdate got;
+	bool received = false;
+	for( int i = 0; i < 200 && !received; ++i )
+	{
+		received = rx.PollLatest( got );
+		if( !received )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+	}
+	CHECK( received );
+	if( received )
+		CHECK( got.frames[ 0 ].frameId == 4242 );
+	rx.Stop();
+}
+
 int main()
 {
 	TestParsePose();
@@ -696,6 +803,7 @@ int main()
 	TestMultipleBodies();
 	TestReceiverRoundTrip();
 	TestReceiverPerPerson();
+	TestReceiverRebindsAfterAFailedStart();
 
 	if( failures == 0 )
 		std::printf( "all pose tests passed\n" );
