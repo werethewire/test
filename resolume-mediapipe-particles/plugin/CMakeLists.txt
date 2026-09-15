@@ -12,6 +12,13 @@ if( APPLE AND NOT CMAKE_OSX_ARCHITECTURES )
 	set( CMAKE_OSX_ARCHITECTURES "x86_64;arm64" )
 endif()
 
+# GLEW's headers declare its entry points as DLL imports unless told otherwise.
+# This has to be set before the SDK target exists, because the SDK compiles
+# FFGL.h too.
+if( WIN32 AND VCPKG_TARGET_TRIPLET MATCHES "static" )
+	add_compile_definitions( GLEW_STATIC )
+endif()
+
 # ---------------------------------------------------------------- FFGL SDK
 #
 # Point FFGL_SDK_DIR at a checkout of https://github.com/resolume/ffgl, or let

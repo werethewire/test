@@ -74,8 +74,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install GLEW
-        # The FFGL SDK links GLEW on every platform except macOS.
-        run: vcpkg install glew:x64-windows
+        # Static, so the plugin ships as a single self-contained DLL. The
+        # dynamic triplet leaves it importing glew32.dll, which is not next to
+        # it once installed, and Resolume then skips the plugin in silence.
+        # The "-md" half keeps the CRT dynamic, matching what the host uses.
+        run: vcpkg install glew:x64-windows-static-md
 
       - name: Configure
         # No -G: the runner image's Visual Studio version moves (it is already
@@ -85,7 +88,7 @@ jobs:
         run: >
           cmake -S plugin -B build -A x64
           -DCMAKE_TOOLCHAIN_FILE="${env:VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake"
-          -DVCPKG_TARGET_TRIPLET=x64-windows
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static-md
 
       - name: Build
         run: cmake --build build --config Release
@@ -116,6 +119,18 @@ jobs:
           Write-Host $exports
           if ($exports -notmatch 'plugMain') { throw "plugMain is not exported" }
           Write-Host "plugMain is exported"
+
+          # A Resolume plugin is installed as a lone file, so anything it
+          # imports beyond the system DLLs makes it unloadable on the target
+          # machine -- and the host reports that by simply not listing it.
+          $dependents = & $dumpbin /dependents $dll.FullName | Out-String
+          Write-Host $dependents
+          foreach ($banned in @('glew32.dll', 'glew32d.dll')) {
+            if ($dependents -match [regex]::Escape($banned)) {
+              throw "the plugin imports $banned; it has to be statically linked"
+            }
+          }
+          Write-Host "no non-system imports"
 
       - uses: actions/upload-artifact@v4
         with:
