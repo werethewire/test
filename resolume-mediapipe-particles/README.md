@@ -282,8 +282,12 @@ Resolume のパラメータは OSC / MIDI にそのままマップできるの�
 
 - **輪郭のきらめき**: Drag 高め、Turbulence 低め、Life 短め、Emit From = Whole Body
 - **軌跡を引く翼**: Trails 0.6、Body Attract 高め、Emit From = Limbs、Color By = Speed
-- **手だけが光る**: Emit From = Hands、Body Attract 1.5 前後、Drag 高め、Size 小さめ(手の動きの軌跡を描くなら Trails も)
-- **顔だけが浮かぶ**: Emit From = Head、Zoom と Position で顔を画面中央に大きく、Life 短め、Emit Spread 低め
+- **手だけが光る**: Emit From = Hands、Brightness 0.2 前後(スライダー 5%)、Body Attract 1.5 前後、Drag 高め、Size 小さめ(手の動きの軌跡を描くなら Trails も)
+- **顔だけが浮かぶ**: Emit From = Head、Brightness 0.2 前後、Emit Spread 0、Size 1.5 px 前後(スライダー 4%)。
+  目・鼻・口・耳を結ぶ線の網として出ます。Zoom と Position で顔を寄せると大きく使えます
+
+Hands / Head は粒の総数を手や顔の小さな範囲に集めるので、既定の Brightness(1.0)だと白く飛びます。
+まず Brightness を下げてください(Arena 7.27.1 で実カメラ確認時、0.2 で顔の線が読めるようになりました)。
 - **煙のように崩れる体**: Gravity 負、Drag 低め、Turbulence 高め、Life 長め
 - **奥行きを強調**: Depth 2.0 前後、Size 小さめ、Size Random 低め(遠近差が読みやすくなる)
 
@@ -400,6 +404,9 @@ Resolume のパラメータは OSC / MIDI にそのままマップできるの�
 - `Emit From` = Hands / Head を、この PC の GPU(RTX 4070、GL 4.1 core)で `mpp_headless hands` / `head` として描画:
   光ったピクセルの 99.8% が手の領域、100% が顔の領域に収まる。既存の Whole Body / alt / two の出力画像は、
   手と顔の骨を足す前のコミット(579664d)とバイト単位で一致し、既存モードの見た目が変わらないことを確認。
+- Arena 7.27.1 で `Emit From` に Hands / Head が並び、実カメラ(座った上半身、検出率 100%)で切り替えると、
+  Whole Body は上半身全体、Hands は手の位置だけ、Head は顔の位置だけから出る。Head は Brightness 0.2 で
+  目・鼻・口・耳の線が読め、頭の動きに追従する。
 - DirectShow のカメラ一覧(8 台)と OpenCV `CAP_DSHOW` の番号が一致すること(0〜7 は開けて 8 は開けない、
   解像度と輝度が各機器と対応)。
 
@@ -423,7 +430,6 @@ Resolume のパラメータは OSC / MIDI にそのままマップできるの�
   (輝度が通常の約 3 倍、`Reset` でも戻らない)。同じ入力の順番を新しいインスタンスで再現しても起きず、
   新しいインスタンスを 10 分以上動かしても起きていないため、原因は特定できていません。
   本番前に長時間の通し確認をしてください。
-- Arena の中での `Emit From` = Hands / Head(追加時点で Arena 上にこのソースのクリップが再生中で、DLL を差し替えられなかった)。
 - macOS 実機。
 
 ### CI
