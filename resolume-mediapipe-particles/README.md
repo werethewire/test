@@ -52,9 +52,19 @@ FFGL SDK は自動取得されます。既存のチェックアウトを使う�
 
 ```bash
 # Windows (x64) -- GLEW が必要です(FFGL の公開ヘッダが glew.h を include するため)
-#   vcpkg install glew:x64-windows
+# 必ず静的リンクにします。動的な x64-windows だと glew32.dll に依存し、
+# Resolume はエラーも出さずにプラグインを一覧から外します。
+#   vcpkg install glew:x64-windows-static-md
 cmake -S plugin -B build -A x64 ^
-  -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake
+  -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake ^
+  -DVCPKG_TARGET_TRIPLET=x64-windows-static-md
+cmake --build build --config Release
+
+# vcpkg を使わない場合: FFGL SDK のチェックアウトに同梱の glew32s.lib を使えます
+cmake -S plugin -B build -A x64 -DFFGL_SDK_DIR=C:/path/to/ffgl ^
+  -DGLEW_USE_STATIC_LIBS=ON ^
+  -DGLEW_INCLUDE_DIR=C:/path/to/ffgl/deps/glew-2.1.0/include ^
+  -DGLEW_STATIC_LIBRARY_RELEASE=C:/path/to/ffgl/deps/glew-2.1.0/lib/Release/x64/glew32s.lib
 cmake --build build --config Release
 
 # macOS (Universal: x86_64 + arm64 を既定でビルドします)
@@ -73,12 +83,26 @@ CMake が見つけたものに任せます。単一アーキテクチャで良�
 
 ### インストール
 
-Resolume の `Preferences → Video → FFGL Plugins` にフォルダを追加して、そこに置くのが確実です。既定の場所は次の通りです。
+Resolume が既定で読むのは `<ドキュメント>\Resolume Arena\Extra Effects\` です
+(Avenue は `Resolume Avenue`)。Arena 7.27.1 / Windows 11 で確認したところ、
+起動時に走査されるのはこのフォルダだけで、`C:\Program Files\Common Files\FreeFrame\` は
+存在せず、走査もされていませんでした。他のフォルダに置く場合は
+`Preferences → Video → FFGL Plugins` に追加してください。
 
-- Windows: `C:\Program Files\Common Files\FreeFrame\`
-- macOS: `/Library/Graphics/FreeFrame Plug-Ins/`
+- Windows: `<ドキュメント>\Resolume Arena\Extra Effects\`(実機で確認済み)
+- macOS: 未確認です。`Preferences → Video → FFGL Plugins` に追加したフォルダに置くのが確実です
 
-Resolume を再起動すると Sources に **MediaPipe Particles** が現れます。
+新しい DLL を置くと Arena は再起動なしで再走査し、Sources に **Pose Particles** が現れます。
+読み込まれたかどうかは `%LOCALAPPDATA%\Resolume Arena\Resolume Arena log.txt` の
+`registered extension: 'Pose Particles' uid: MPPT` で確認できます。
+名前が出ない場合は、同じログの `Loading plugin` の行を見てください。
+
+入れ替えるときの注意(7.27.1 で確認):
+
+- このソースを使っているクリップが残っていると DLL がロックされ、上書きできません。
+  該当クリップを外すか、Arena を終了してから置き換えます。
+- 同じパスの DLL を置き換えると、以後に開くクリップは新しいコードで動きますが、
+  ソース一覧の名前は古い登録のままです。名前を変えたときは Arena を再起動してください。
 ブラウザ上のサムネイル(160×120、プラグイン起動時に CPU 生成)はこう表示されます。
 
 ![thumbnail](docs/thumbnail.png)
@@ -90,10 +114,19 @@ Resolume を再起動すると Sources に **MediaPipe Particles** が現れま�
 
 ```bash
 pip install -r tracker/requirements.txt
-python3 tracker/pose_osc.py --preview
+curl -LO https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task
+python3 tracker/pose_osc.py --model pose_landmarker_full.task --preview
 ```
 
+`--model` は実質必須です。現行の mediapipe(0.10.35 で確認)には旧 `mp.solutions.pose` が無く、
+`--model` なしでは起動時にその旨を表示して終了します。Windows では `python3` の代わりに `py` を使ってください。
+
 3. カメラの前に立つ。パーティクルが体の輪郭から湧き出します。
+
+カメラは開けたのに `no frames from device ... try another --backend` が出る場合、
+OpenCV の既定バックエンドがそのカメラから映像を取れていません。
+Windows では `--backend dshow` を試し、それでも駄目なら `--device 1` などで別の機器を指定します。
+動作確認用に、カメラの代わりに動画ファイルも渡せます(`--device clip.mp4`)。
 
 別 PC のカメラを使う場合は送信先を指定します(受信側はプラグインの `OSC Port`)。
 
@@ -246,8 +279,16 @@ Resolume のパラメータは OSC / MIDI にそのままマップできるの�
   黙って切り取られたり真っ黒になったりします(「テストでは動くのにホストでは黒い」の典型)。
   自分が触る分は全て退避してから強制し、終了時に戻します。
   逆に、こちらが変えたまま放置してホスト側の描画を壊すこともありません。
+- **同じポートのインスタンスは 1 本のソケットを共有する**: Arena ではクリップスロットごとに
+  プラグインのインスタンスができ、一度再生したクリップは別のクリップに切り替えたあとも受信を続けます。
+  以前はインスタンスごとにソケットを開いていたため、Windows では `SO_REUSEADDR` で 2 つ目の bind も
+  成功してしまい、データグラムは片方にしか届きませんでした。列 1 → 列 2 と切り替えると、
+  画面に出ている列 2 が真っ黒になります(Arena 7.27.1 で再現)。
+  今はプロセス内でポートごとに受信スレッドを 1 本だけ持ち、全インスタンスに同じポーズを配ります。
+  ソケットは排他的に確保するので(Windows は `SO_EXCLUSIVEADDRUSE`)、別プロセスが同じポートに
+  割り込んで一部を横取りすることもありません。
 - **OSC の bind は失敗したら諦めない**: コンポジション読み込み時はポートが一瞬塞がっていることがあります
-  (別インスタンスの終了待ち、OS がソケットを解放しきっていない等)。
+  (別プロセスがまだ掴んでいる、OS がソケットを解放しきっていない等)。
   2 秒間隔で再試行するので、1 回の bind 失敗でその後ずっと無反応になることはありません。
 - **粒数変更で画が飛ばない**: `Particles` を変えるとテクスチャは作り直しますが、
   旧テクスチャから重なる範囲を `glBlitFramebuffer` でコピーしてから差し替えます。
@@ -261,7 +302,8 @@ Resolume のパラメータは OSC / MIDI にそのままマップできるの�
   範囲外 personId)、1€ フィルタの収束・ノイズ減衰・速度推定、座標変換とミラー、
   奥行きのスケールとフィルタ、エミッション表、presence エンベロープ、
   複数人のスロット独立性と CDF 配分、実ソケットでの往復、
-  bind 失敗後にポートが空いたら復帰すること。`ctest` で全て通過。
+  bind 失敗後にポートが空いたら復帰すること、同じポートの受信機が全員同じパケットを受け取ること、
+  外部のソケットが `SO_REUSEADDR` でポートに割り込めないこと。`ctest` で全て通過。
 - Python が実際に送るバイト列を C++ パーサに読ませ、1 人 / 複数人 / 全体クリア /
   個別クリアの全ケースで値が一致することを確認。
 - `send_test_pose.py --people 3` → `PoseReceiver` → `PoseTracker` を実際に 2 秒走らせ、
@@ -278,8 +320,29 @@ Resolume のパラメータは OSC / MIDI にそのままマップできるの�
   最後の構成は、ガードを外すと実際にフレームが真っ黒になる(lit 8431 → 0)ことを
   確認してからテストとして採用しています。
 
-Resolume 本体での動作は、この環境に Resolume も GPU もないため未検証です。
-Windows / macOS の実機で確認してください。
+### Windows 実機(Resolume Arena 7.27.1 / Windows 11 / NVIDIA, OpenGL 4.1)
+
+2026-09-16 に実機で確認したこと:
+
+- DLL の依存は `WS2_32` `OPENGL32` `KERNEL32` と VC ランタイム(`MSVCP140` `VCRUNTIME140` 等)のみ。
+  `glew32.dll` への依存が無いことを `dumpbin /dependents` で確認し、エクスポートは `plugMain` / `SetLogCallback`。
+- `Extra Effects` に置くと再起動なしで `registered extension ... uid: MPPT category: 3` が記録され、Sources に出る。
+  パラメータ 4 グループ、既定値(Particles 256² = 65,536 など)が表の通りに Arena へ渡っている。
+- `send_test_pose.py`(1 人 / 3 人 / `--gap` によるフェードアウトと復帰)で描画。ログに GL エラーなし。
+- 列 1 を再生してから列 2 に切り替えると列 2 が真っ黒になる不具合を発見し、共有ソケットで修正。
+  修正後は切り替えても描画が続き、UDP 9010 のソケットが 1 本だけであることを確認。
+- `pose_osc.py --model ... --people 3 --device <人が映った動画>` で、実際の MediaPipe 検出
+  (約 22 fps、検出率 93〜100%)からパーティクルが体の動きに追従することを確認。
+
+確認できていないこと:
+
+- **実カメラ**: この PC の `USB Video Device` は信号の無いキャプチャ機器で、映像が真っ黒でした。
+  Web カメラをつないで `pose_osc.py --preview` を確認してください。
+- 最初に作ったインスタンスが途中から、粒が画面全体に噴き出すような見た目に崩れました
+  (輝度が通常の約 3 倍、`Reset` でも戻らない)。同じ入力の順番を新しいインスタンスで再現しても起きず、
+  新しいインスタンスを 10 分以上動かしても起きていないため、原因は特定できていません。
+  本番前に長時間の通し確認をしてください。
+- macOS 実機。
 
 ### CI
 
@@ -319,9 +382,12 @@ CI を組んだことで、この環境では再現できない実機固有の�
   OpenGL 4.1 の保証値に近づくため、関節データのテクスチャ化が必要になります。
 - 奥行き (`z`) は粒径と輝度に効きますが、シミュレーション自体は 2D です。
   奥の人が手前の人に隠れることはありません(加算合成なので順序に依存しません)。
-- 1 つの OSC ポートを受け取れるのは 1 インスタンスだけです。同じコンポジションに
-  複数配置する場合は、各インスタンスの `OSC Port` を変えて、トラッカー側で
+- 同じ Resolume の中なら、何個のクリップ・レイヤーに置いても同じ `OSC Port` で全員が受信します。
+  別のプロセス(Arena と Avenue を同時に起動する等)とは同じポートを共有できないので、
+  そちらは `OSC Port` を変えて、トラッカー側で
   `--target 127.0.0.1:9010 --target 127.0.0.1:9011` のように並べて送ってください。
+- FFGL のプラグイン名は 16 文字までです(超えた分は Resolume が切り捨てます)。
+  そのためソース名は `Pose Particles` にしています。
 - MediaPipe の `z` は単眼推定で、絶対距離ではありません。人が横を向いたときなどは
   それなりに揺れます。`Depth` を上げすぎると粒径がちらつきます。
 - プラグインの FFGL ユニーク ID は `MPPT` です。他のプラグインと衝突する場合は

@@ -166,8 +166,13 @@ class TasksBackend(PoseBackend):
 
         self._mp = mp
         self._vision = vision
+        # Hand MediaPipe the bytes rather than the path: on Windows its native
+        # loader cannot open a path with non-ASCII characters in it (a Japanese
+        # user folder, say) and fails with "Unable to open file".
+        with open(model_path, "rb") as model_file:
+            model_bytes = model_file.read()
         options = vision.PoseLandmarkerOptions(
-            base_options=mp_python.BaseOptions(model_asset_path=model_path),
+            base_options=mp_python.BaseOptions(model_asset_buffer=model_bytes),
             running_mode=vision.RunningMode.VIDEO,
             num_poses=num_poses,
             min_pose_detection_confidence=min_confidence,
@@ -405,10 +410,14 @@ def parse_targets(values: Sequence[str], default_port: int) -> List[Tuple[str, i
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Stream MediaPipe pose landmarks to the Resolume "
-                    "MediaPipe Particles FFGL plugin over OSC."
+                    "Pose Particles FFGL plugin over OSC."
     )
     parser.add_argument("--device", default="0",
                         help="camera index or a video file path (default: 0)")
+    parser.add_argument("--backend", default="auto",
+                        choices=("auto", "dshow", "msmf", "avfoundation", "v4l2"),
+                        help="OpenCV capture backend (default: auto). On Windows "
+                             "try dshow when a camera opens but sends no frames")
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--fps", type=int, default=60,
@@ -453,7 +462,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if str(args.device).isdigit():
         device = int(args.device)
 
-    capture = cv2.VideoCapture(device)
+    backends = {
+        "auto": cv2.CAP_ANY,
+        "dshow": cv2.CAP_DSHOW,
+        "msmf": cv2.CAP_MSMF,
+        "avfoundation": cv2.CAP_AVFOUNDATION,
+        "v4l2": cv2.CAP_V4L2,
+    }
+    capture = cv2.VideoCapture(device, backends[args.backend])
     if not capture.isOpened():
         print(f"could not open capture device {args.device!r}", file=sys.stderr)
         return 1
@@ -480,6 +496,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     reported = started
     frames_since_report = 0
     detections_since_report = 0
+    last_frame_at = started
+    stall_warned_at = started
 
     try:
         while True:
@@ -488,7 +506,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 # Video files simply end; cameras occasionally drop a frame.
                 if isinstance(device, str):
                     break
+                # Some cameras open fine and then never deliver a frame (on
+                # Windows this happens with the default Media Foundation
+                # backend). Say so, instead of sitting there looking alive.
+                now = time.perf_counter()
+                if now - last_frame_at >= 3.0 and now - stall_warned_at >= 3.0:
+                    print(f"\nno frames from device {args.device!r} for "
+                          f"{now - last_frame_at:.0f} s (backend {args.backend}); "
+                          "try another --backend or --device",
+                          file=sys.stderr, flush=True)
+                    stall_warned_at = now
                 continue
+            last_frame_at = time.perf_counter()
 
             frame_id += 1
             timestamp_ms = int((time.perf_counter() - started) * 1000.0)

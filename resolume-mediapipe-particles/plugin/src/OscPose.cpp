@@ -1,6 +1,10 @@
 #include "OscPose.h"
 
+#include <algorithm>
 #include <cstring>
+#include <map>
+#include <thread>
+#include <vector>
 
 #if defined( _WIN32 )
 	// windows.h defines min/max as macros, which turns any std::max( ... )
@@ -196,17 +200,84 @@ bool ParsePosePacket( const char* data, size_t len, PoseUpdate& out )
 	return ParseElement( r, out );
 }
 
-PoseReceiver::~PoseReceiver()
+// ------------------------------------------------------------ shared listener
+
+/// One socket and one thread per port, fanning every packet out to all the
+/// receivers subscribed to it. Lives as long as any receiver holds it.
+class PortListener
 {
-	Stop();
+public:
+	/// The listener already open on `port` in this process, or a newly bound
+	/// one. Null when the port cannot be bound.
+	static std::shared_ptr< PortListener > Acquire( uint16_t port );
+
+	~PortListener();
+
+	void Subscribe( PoseReceiver* receiver );
+	void Unsubscribe( PoseReceiver* receiver );
+
+private:
+	PortListener() = default;
+	bool Bind( uint16_t port );
+	void ReceiveLoop();
+
+	std::thread worker;
+	std::atomic< bool > running{ false };
+	socket_t sock = kInvalidSock;
+
+	std::mutex subscriberMutex;
+	std::vector< PoseReceiver* > subscribers;
+};
+
+namespace
+{
+struct ListenerRegistry
+{
+	std::mutex mutex;
+	std::map< uint16_t, std::weak_ptr< PortListener > > byPort;
+};
+
+ListenerRegistry& Registry()
+{
+	// Deliberately leaked: a listener can still be releasing itself while the
+	// DLL's static destructors run, and it must not find the map gone.
+	static ListenerRegistry* registry = new ListenerRegistry();
+	return *registry;
 }
 
-bool PoseReceiver::Start( uint16_t port )
+void CloseRaw( socket_t s )
 {
-	if( running.load() && boundPort == port )
-		return listening.load();
-	Stop();
+	if( s == kInvalidSock )
+		return;
+#if defined( _WIN32 )
+	::closesocket( s );
+#else
+	::close( s );
+#endif
+}
+}// namespace
 
+std::shared_ptr< PortListener > PortListener::Acquire( uint16_t port )
+{
+	ListenerRegistry& registry = Registry();
+	std::lock_guard< std::mutex > lock( registry.mutex );
+
+	auto found = registry.byPort.find( port );
+	if( found != registry.byPort.end() )
+	{
+		if( auto existing = found->second.lock() )
+			return existing;
+	}
+
+	std::shared_ptr< PortListener > created( new PortListener() );
+	if( !created->Bind( port ) )
+		return nullptr;
+	registry.byPort[ port ] = created;
+	return created;
+}
+
+bool PortListener::Bind( uint16_t port )
+{
 #if defined( _WIN32 )
 	// Refcounted, and Resolume has almost certainly done this already.
 	WSADATA wsa;
@@ -217,10 +288,17 @@ bool PoseReceiver::Start( uint16_t port )
 	if( s == kInvalidSock )
 		return false;
 
-	int reuse = 1;
-	::setsockopt( s, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast< const char* >( &reuse ), sizeof( reuse ) );
+	// No SO_REUSEADDR: UDP has no TIME_WAIT for it to help with, and on
+	// Windows it let a second socket bind the same port and receive a share
+	// of the datagrams in silence. Receivers in this process share this one
+	// socket instead, and on Windows the port is claimed exclusively so that
+	// nobody else can do the same to us.
+#if defined( _WIN32 )
+	int exclusive = 1;
+	::setsockopt( s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast< const char* >( &exclusive ), sizeof( exclusive ) );
+#endif
 
-	// Wake up periodically so Stop() does not have to wait for a datagram.
+	// Wake up periodically so shutting down does not wait for a datagram.
 #if defined( _WIN32 )
 	DWORD timeoutMs = 200;
 	::setsockopt( s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast< const char* >( &timeoutMs ), sizeof( timeoutMs ) );
@@ -238,58 +316,50 @@ bool PoseReceiver::Start( uint16_t port )
 	addr.sin_port        = htons( port );
 	if( ::bind( s, reinterpret_cast< sockaddr* >( &addr ), sizeof( addr ) ) != 0 )
 	{
-#if defined( _WIN32 )
-		::closesocket( s );
-#else
-		::close( s );
-#endif
+		CloseRaw( s );
 		return false;
 	}
 
-	sock      = intptr_t( s );
-	boundPort = port;
-	packetCount.store( 0 );
+	sock = s;
 	running.store( true );
-	listening.store( true );
-	worker = std::thread( &PoseReceiver::ReceiveLoop, this );
+	worker = std::thread( &PortListener::ReceiveLoop, this );
 	return true;
 }
 
-void PoseReceiver::CloseSocket()
-{
-	if( sock == intptr_t( kInvalidSock ) || sock == -1 )
-		return;
-#if defined( _WIN32 )
-	::closesocket( socket_t( sock ) );
-#else
-	::close( int( sock ) );
-#endif
-	sock = -1;
-}
-
-void PoseReceiver::Stop()
+PortListener::~PortListener()
 {
 	running.store( false );
-	listening.store( false );
 	if( worker.joinable() )
 		worker.join();
-	CloseSocket();
-	boundPort = 0;
-
-	std::lock_guard< std::mutex > lock( frameMutex );
-	pending = PoseUpdate();
+	CloseRaw( sock );
+	sock = kInvalidSock;
 }
 
-void PoseReceiver::ReceiveLoop()
+void PortListener::Subscribe( PoseReceiver* receiver )
+{
+	std::lock_guard< std::mutex > lock( subscriberMutex );
+	if( std::find( subscribers.begin(), subscribers.end(), receiver ) == subscribers.end() )
+		subscribers.push_back( receiver );
+}
+
+void PortListener::Unsubscribe( PoseReceiver* receiver )
+{
+	// Holding the lock that delivery takes means no packet is being handed to
+	// `receiver` once this returns, so it is safe to destroy.
+	std::lock_guard< std::mutex > lock( subscriberMutex );
+	subscribers.erase( std::remove( subscribers.begin(), subscribers.end(), receiver ), subscribers.end() );
+}
+
+void PortListener::ReceiveLoop()
 {
 	// 33 landmarks * 4 floats is ~550 bytes; 4 KiB covers any bundling.
 	char buffer[ 4096 ];
 	while( running.load( std::memory_order_relaxed ) )
 	{
 #if defined( _WIN32 )
-		int received = ::recv( socket_t( sock ), buffer, int( sizeof( buffer ) ), 0 );
+		int received = ::recv( sock, buffer, int( sizeof( buffer ) ), 0 );
 #else
-		ssize_t received = ::recv( int( sock ), buffer, sizeof( buffer ), 0 );
+		ssize_t received = ::recv( sock, buffer, sizeof( buffer ), 0 );
 #endif
 		if( received <= 0 )
 			continue;// timeout or transient error
@@ -298,15 +368,60 @@ void PoseReceiver::ReceiveLoop()
 		if( !ParsePosePacket( buffer, size_t( received ), update ) )
 			continue;
 
-		packetCount.fetch_add( 1, std::memory_order_relaxed );
-		std::lock_guard< std::mutex > lock( frameMutex );
-		for( int i = 0; i < MAX_PERSONS; ++i )
-		{
-			if( !update.fresh[ i ] )
-				continue;
-			pending.frames[ i ] = update.frames[ i ];
-			pending.fresh[ i ]  = true;
-		}
+		std::lock_guard< std::mutex > lock( subscriberMutex );
+		for( PoseReceiver* receiver : subscribers )
+			receiver->Deliver( update );
+	}
+}
+
+// ------------------------------------------------------------ receiver
+
+PoseReceiver::~PoseReceiver()
+{
+	Stop();
+}
+
+bool PoseReceiver::Start( uint16_t port )
+{
+	if( listener && boundPort == port )
+		return true;
+	Stop();
+
+	std::shared_ptr< PortListener > joined = PortListener::Acquire( port );
+	if( !joined )
+		return false;
+
+	packetCount.store( 0 );
+	boundPort = port;
+	listener  = joined;
+	listener->Subscribe( this );
+	return true;
+}
+
+void PoseReceiver::Stop()
+{
+	if( listener )
+	{
+		listener->Unsubscribe( this );
+		// Closes the socket if this was the last receiver on the port.
+		listener.reset();
+	}
+	boundPort = 0;
+
+	std::lock_guard< std::mutex > lock( frameMutex );
+	pending = PoseUpdate();
+}
+
+void PoseReceiver::Deliver( const PoseUpdate& update )
+{
+	packetCount.fetch_add( 1, std::memory_order_relaxed );
+	std::lock_guard< std::mutex > lock( frameMutex );
+	for( int i = 0; i < MAX_PERSONS; ++i )
+	{
+		if( !update.fresh[ i ] )
+			continue;
+		pending.frames[ i ] = update.frames[ i ];
+		pending.fresh[ i ]  = true;
 	}
 }
 

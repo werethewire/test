@@ -8,7 +8,7 @@
 static CFFGLPluginInfo PluginInfo(
 	PluginFactory< MediaPipeParticles >,// create method
 	"MPPT",                             // plugin unique ID (4 chars)
-	"MediaPipe Particles",              // plugin name
+	"Pose Particles",                   // plugin name: FFGL keeps only the first 16 chars
 	2,                                  // API major version
 	1,                                  // API minor version
 	1,                                  // plugin major version
@@ -233,9 +233,9 @@ FFResult MediaPipeParticles::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 	}
 	else if( !receiver.IsListening() )
 	{
-		// The port is often busy for a moment when a composition loads: another
-		// instance of this plugin is still shutting down, or the OS has not
-		// released the socket yet. Retrying beats going deaf for the rest of
+		// The port can be busy for a while: another process (a second Resolume,
+		// some other OSC tool) holds it, or the OS has not released a socket
+		// that was just closed. Instances in this process share the port. Retrying beats going deaf for the rest of
 		// the show, which is what a single failed bind used to mean.
 		sinceBindAttempt += dt;
 		if( sinceBindAttempt >= 2.0f )

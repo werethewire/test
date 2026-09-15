@@ -14,8 +14,10 @@ endif()
 
 # GLEW's headers declare its entry points as DLL imports unless told otherwise.
 # This has to be set before the SDK target exists, because the SDK compiles
-# FFGL.h too.
-if( WIN32 AND VCPKG_TARGET_TRIPLET MATCHES "static" )
+# FFGL.h too. Static GLEW arrives either from a vcpkg static triplet or from
+# FindGLEW's GLEW_USE_STATIC_LIBS (e.g. the glew32s.lib the FFGL SDK bundles
+# under deps/); both need the define, or every GL call links as __imp_.
+if( WIN32 AND ( VCPKG_TARGET_TRIPLET MATCHES "static" OR GLEW_USE_STATIC_LIBS ) )
 	add_compile_definitions( GLEW_STATIC )
 endif()
 

@@ -10,8 +10,8 @@
 
 #include <atomic>
 #include <cstddef>
+#include <memory>
 #include <mutex>
-#include <thread>
 
 namespace mpp
 {
@@ -46,9 +46,18 @@ struct PoseUpdate
 /// Exposed (rather than hidden in the receive loop) so it can be unit tested.
 bool ParsePosePacket( const char* data, size_t len, PoseUpdate& out );
 
+class PortListener;
+
 /// Background UDP listener. Keeps only the most recent frame per body -- if
 /// the render thread is slower than the camera, dropping intermediate poses is
 /// correct.
+///
+/// Receivers on the same port within one process share a single socket and
+/// each get every packet. Arena creates a plugin instance per clip slot, and
+/// an instance that has played keeps its receiver after the layer moves on to
+/// another clip, so several of them listening to one tracker is the normal
+/// case rather than a misconfiguration. The shared socket is exclusive, so
+/// another process cannot bind the port and quietly take part of the traffic.
 class PoseReceiver
 {
 public:
@@ -58,12 +67,13 @@ public:
 	PoseReceiver( const PoseReceiver& )            = delete;
 	PoseReceiver& operator=( const PoseReceiver& ) = delete;
 
-	/// Binds to `port` on the loopback-reachable wildcard address and starts
-	/// the listener thread. Re-binds when called with a different port.
+	/// Joins the listener for `port`, binding it on the wildcard address if no
+	/// receiver in this process has yet. Switches when called with a different
+	/// port. Returns false when the port is held by somebody else.
 	bool Start( uint16_t port );
 	void Stop();
 
-	bool IsListening() const { return listening.load( std::memory_order_relaxed ); }
+	bool IsListening() const { return listener != nullptr; }
 	uint16_t Port() const { return boundPort; }
 
 	/// Copies whatever arrived since the previous call. Returns false when
@@ -75,18 +85,16 @@ public:
 	uint64_t PacketCount() const { return packetCount.load( std::memory_order_relaxed ); }
 
 private:
-	void ReceiveLoop();
-	void CloseSocket();
+	friend class PortListener;
+	/// Called on the listener thread with every packet that parsed.
+	void Deliver( const PoseUpdate& update );
 
-	std::thread worker;
+	std::shared_ptr< PortListener > listener;
 	std::mutex frameMutex;
 	PoseUpdate pending;
 
-	std::atomic< bool > running{ false };
-	std::atomic< bool > listening{ false };
 	std::atomic< uint64_t > packetCount{ 0 };
 	uint16_t boundPort = 0;
-	intptr_t sock      = -1;
 };
 
 }// namespace mpp

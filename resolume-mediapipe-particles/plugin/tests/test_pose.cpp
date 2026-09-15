@@ -787,6 +787,129 @@ static void TestReceiverRebindsAfterAFailedStart()
 	rx.Stop();
 }
 
+/// Poll until something arrives or roughly a second passes.
+static bool PollFor( mpp::PoseReceiver& rx, mpp::PoseUpdate& got )
+{
+	for( int i = 0; i < 200; ++i )
+	{
+		if( rx.PollLatest( got ) )
+			return true;
+		std::this_thread::sleep_for( std::chrono::milliseconds( 5 ) );
+	}
+	return false;
+}
+
+static void TestReceiversShareAPort()
+{
+	// In Arena every clip slot holding the source is its own plugin instance,
+	// and one that has played keeps its receiver after the layer moves on to
+	// another clip. All of them are listening to the same tracker, so they have
+	// to share the port. With one socket each, Windows let every bind succeed
+	// (SO_REUSEADDR) and handed each datagram to only one of them: the clip
+	// actually on screen went black while a stopped one got the poses.
+	uint16_t port = 0;
+	for( uint16_t candidate = 19210; candidate < 19260; ++candidate )
+	{
+		RawSocket probe = OccupyUdpPort( candidate );
+		if( probe != kNoSocket )
+		{
+			CloseRawSocket( probe );
+			port = candidate;
+			break;
+		}
+	}
+	if( port == 0 )
+	{
+		std::printf( "SKIP shared port test (no bindable port)\n" );
+		return;
+	}
+
+	float lm[ mpp::POSE_FLOAT_COUNT ];
+	FillTPose( lm );
+
+	{
+		mpp::PoseReceiver first;
+		mpp::PoseReceiver second;
+		CHECK( first.Start( port ) );
+		CHECK( second.Start( port ) );
+		CHECK( first.IsListening() && second.IsListening() );
+
+		auto packet = MakePosePacket( 7001, lm );
+		CHECK( SendUdpLoopback( port, packet.data(), packet.size() ) );
+		mpp::PoseUpdate gotFirst, gotSecond;
+		CHECK( PollFor( first, gotFirst ) );
+		CHECK( PollFor( second, gotSecond ) );
+		CHECK( gotFirst.frames[ 0 ].frameId == 7001 );
+		CHECK( gotSecond.frames[ 0 ].frameId == 7001 );
+
+		// The instance that goes away must not take the port with it.
+		first.Stop();
+		CHECK( !first.IsListening() );
+		CHECK( second.IsListening() );
+		packet = MakePosePacket( 7002, lm );
+		CHECK( SendUdpLoopback( port, packet.data(), packet.size() ) );
+		CHECK( PollFor( second, gotSecond ) );
+		CHECK( gotSecond.frames[ 0 ].frameId == 7002 );
+
+		// Joining after the port is already open still gets everything new.
+		mpp::PoseReceiver late;
+		CHECK( late.Start( port ) );
+		packet = MakePosePacket( 7003, lm );
+		CHECK( SendUdpLoopback( port, packet.data(), packet.size() ) );
+		mpp::PoseUpdate gotLate;
+		CHECK( PollFor( late, gotLate ) );
+		CHECK( gotLate.frames[ 0 ].frameId == 7003 );
+		CHECK( PollFor( second, gotSecond ) );
+		CHECK( gotSecond.frames[ 0 ].frameId == 7003 );
+	}
+
+	// Once the last receiver is gone the socket is closed, so the port is free
+	// for anybody else again.
+	RawSocket after = OccupyUdpPort( port );
+	CHECK( after != kNoSocket );
+	CloseRawSocket( after );
+}
+
+static void TestOtherProcessCannotSplitThePort()
+{
+	// A socket outside the plugin that asks to share (a second Resolume, or any
+	// other OSC app using SO_REUSEADDR) must not be able to quietly take half
+	// the datagrams; the plugin's socket has to refuse it.
+	uint16_t port = 0;
+	mpp::PoseReceiver rx;
+	for( uint16_t candidate = 19310; candidate < 19360; ++candidate )
+	{
+		if( rx.Start( candidate ) )
+		{
+			port = candidate;
+			break;
+		}
+	}
+	if( port == 0 )
+	{
+		std::printf( "SKIP exclusive port test (no bindable port)\n" );
+		return;
+	}
+
+#if defined( _WIN32 )
+	WSADATA wsa;
+	WSAStartup( MAKEWORD( 2, 2 ), &wsa );
+#endif
+	RawSocket intruder = ::socket( AF_INET, SOCK_DGRAM, IPPROTO_UDP );
+	CHECK( intruder != kNoSocket );
+	int reuse = 1;
+	::setsockopt( intruder, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast< const char* >( &reuse ), sizeof( reuse ) );
+	sockaddr_in addr;
+	std::memset( &addr, 0, sizeof( addr ) );
+	addr.sin_family      = AF_INET;
+	addr.sin_port        = htons( port );
+	addr.sin_addr.s_addr = htonl( INADDR_ANY );
+	const bool intruderBound = ::bind( intruder, reinterpret_cast< sockaddr* >( &addr ), sizeof( addr ) ) == 0;
+	CHECK( !intruderBound );
+	CloseRawSocket( intruder );
+	rx.Stop();
+}
+
 int main()
 {
 	TestParsePose();
@@ -804,6 +927,8 @@ int main()
 	TestReceiverRoundTrip();
 	TestReceiverPerPerson();
 	TestReceiverRebindsAfterAFailedStart();
+	TestReceiversShareAPort();
+	TestOtherProcessCannotSplitThePort();
 
 	if( failures == 0 )
 		std::printf( "all pose tests passed\n" );
