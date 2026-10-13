@@ -121,6 +121,9 @@ def scale_bar(x, y):
     ax.text(x, y + 3.5, "SCALE 1/100 (A3)", fontsize=4.2, ha="left")
 
 pdf = PdfPages(OUT + ".pdf")
+sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
+from dxf_export import Exporter
+DXF = Exporter()
 
 # ======================================================================
 # SHEET 1 : PLAN
@@ -338,7 +341,7 @@ ax.add_patch(Rectangle((352, 198 - 7 * 6 - 1.5), 6, 3, fc="none", ec="k", lw=0.3
 ax.text(360, 198 - 7 * 6, "天井設置（PJ）", fontsize=4.6, va="center")
 line((345, 8), (345, H - 8), 0.4)
 title_block("HIROBA 平面図（完全版）", "1/2")
-pdf.savefig(fig1); fig1.savefig(OUT + "_1.png", dpi=150); plt.close(fig1)
+DXF.add_sheet(ax, 0.0); pdf.savefig(fig1); fig1.savefig(OUT + "_1.png", dpi=150); plt.close(fig1)
 
 # ======================================================================
 # SHEET 2 : ELEVATION A + SECTION B-B + NOTES
@@ -446,5 +449,6 @@ ax.imshow(ph, extent=(200, 200 + pw, 270 - phh, 270), zorder=1)
 ax.add_patch(Rectangle((200, 270 - phh), pw, phh, fc="none", ec="k", lw=0.4))
 ax.text(200, 274, "参考：現況写真（A面 北西より）", fontsize=5.5, ha="left")
 title_block("A展開図・B-B断面", "2/2")
-pdf.savefig(fig2); fig2.savefig(OUT + "_2.png", dpi=150); plt.close(fig2)
+DXF.add_sheet(ax, 45000.0); pdf.savefig(fig2); fig2.savefig(OUT + "_2.png", dpi=150); plt.close(fig2)
 pdf.close()
+DXF.save(OUT + ".dxf")
