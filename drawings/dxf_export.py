@@ -23,6 +23,8 @@ def _hex(c):
 def _layer(art, colour):
     z = art.get_zorder()
     ls = getattr(art, "get_linestyle", lambda: "-")()
+    if z >= 10 and z < 11 and not isinstance(art, Text):
+        return "A-FRAME"
     if z >= 9 and z < 10:
         return "A-DIMS"
     h = _hex(colour)
