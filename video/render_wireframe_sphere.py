@@ -1,4 +1,4 @@
-"""Render a 10s weightless video from inside a tumbling quad-grid wireframe sphere with drifting particles.
+"""Render a 10s weightless video from inside a tumbling lat/long wireframe sphere with drifting particles.
 
 Usage: python3 render_wireframe_sphere.py [output.mp4]
 Requires numpy, Pillow and ffmpeg on PATH.
@@ -19,9 +19,10 @@ OUT = sys.argv[1] if len(sys.argv) > 1 else "wireframe_sphere_particles.mp4"
 CAM = np.array([0.0, 0.0, 0.32])
 FOCAL = (W / 2) / np.tan(np.radians(52))
 NEAR = 0.04
-GRID_DIV = 5  # quads per cube-face edge; a cube-sphere grid has no poles -> no visual centre
-ARC_SAMPLES = 1600
-N_PARTICLES = 1750
+LAT_LINES = 9  # 18deg spacing
+MERIDIANS = 10  # full great circles through the poles -> 20 meridians, 18deg spacing
+SEG = 6000
+N_PARTICLES = 875
 # Two rotations on unrelated oblique axes -> the effective spin axis keeps wandering (tumbling)
 TUMBLE = [(np.array([0.8, 0.5, 0.3]), np.radians(34)), (np.array([-0.3, 0.6, -0.75]), np.radians(22))]
 
@@ -30,29 +31,25 @@ TAU = 2 * np.pi
 
 
 def build_wireframe():
-    """Equal-angle cube-sphere grid lines as great-circle arcs: (arcs, ARC_SAMPLES, 3)."""
-    ends = np.tan(np.linspace(-np.pi / 4, np.pi / 4, GRID_DIV + 1))
-    arcs = set()
-    for axis in range(3):
-        for sign in (-1, 1):
-            for k in ends:
-                for swap in (False, True):
-                    # On face (axis, sign), a line of constant tangent coordinate k spans edge to edge
-                    a, b = np.zeros(3), np.zeros(3)
-                    o1, o2 = [i for i in range(3) if i != axis][:: -1 if swap else 1]
-                    a[axis] = b[axis] = sign
-                    a[o1] = b[o1] = k
-                    a[o2], b[o2] = -1, 1
-                    a, b = a / np.linalg.norm(a), b / np.linalg.norm(b)
-                    arcs.add(tuple(sorted((tuple(np.round(a, 9)), tuple(np.round(b, 9))))))
-    p0 = np.array([e[0] for e in arcs])
-    p1 = np.array([e[1] for e in arcs])
-    om = np.arccos(np.clip((p0 * p1).sum(1), -1, 1))[:, None, None]
-    tt = np.linspace(0, 1, ARC_SAMPLES)[None, :, None]
-    return (np.sin((1 - tt) * om) * p0[:, None] + np.sin(tt * om) * p1[:, None]) / np.sin(om)
+    """Return (lines, SEG, 3): every line is a closed circle sampled SEG times."""
+    th = np.linspace(0, TAU, SEG)
+    lines = []
+    for i in range(1, LAT_LINES + 1):
+        phi = -np.pi / 2 + np.pi * i / (LAT_LINES + 1)
+        r, y = np.cos(phi), np.sin(phi)
+        lines.append(np.stack([r * np.cos(th), np.full_like(th, y), r * np.sin(th)], 1))
+    for j in range(MERIDIANS):
+        a = np.pi * j / MERIDIANS
+        lines.append(np.stack([np.cos(th) * np.cos(a), np.sin(th), np.cos(th) * np.sin(a)], 1))
+    return np.stack(lines)
 
 
 WIRE = build_wireframe()
+# Soften where meridians converge so the poles read as a glow rather than a blown-out star
+_pf = np.clip((1 - np.abs(WIRE[..., 1])) / (1 - np.cos(np.radians(16))), 0, 1)
+WIRE_POLE_FADE = 0.3 + 0.7 * _pf * _pf * (3 - 2 * _pf)
+# A soft band of light sweeps through space; the grid tumbles through it like drifting through a current
+WAVE_DIR = np.array([0.45, -0.3, 0.84]) / np.linalg.norm([0.45, -0.3, 0.84])
 
 # Particles fill the sphere volume and drift on slow periodic paths
 u = rng.normal(size=(N_PARTICLES, 3))
@@ -60,12 +57,12 @@ u /= np.linalg.norm(u, axis=1, keepdims=True)
 P_BASE = u * (rng.uniform(0, 1, N_PARTICLES) ** (1 / 3) * 0.92)[:, None]
 # Two slow, incommensurate sway components per axis give an organic, buoyant float
 P_AMP = rng.uniform(0.03, 0.16, (N_PARTICLES, 3))
-P_FREQ = rng.uniform(0.5, 1.0, (N_PARTICLES, 3)) * TAU / DURATION
+P_FREQ = rng.uniform(0.25, 0.5, (N_PARTICLES, 3)) * TAU / DURATION
 P_AMP2 = rng.uniform(0.01, 0.06, (N_PARTICLES, 3))
-P_FREQ2 = rng.uniform(1.0, 1.6, (N_PARTICLES, 3)) * TAU / DURATION
+P_FREQ2 = rng.uniform(0.5, 0.8, (N_PARTICLES, 3)) * TAU / DURATION
 P_PHASE2 = rng.uniform(0, TAU, (N_PARTICLES, 3))
 P_PHASE = rng.uniform(0, TAU, (N_PARTICLES, 3))
-P_VEL = rng.normal(size=(N_PARTICLES, 3)) * 0.011  # slow straight drift in every direction
+P_VEL = rng.normal(size=(N_PARTICLES, 3)) * 0.0055  # slow straight drift in every direction
 P_BRIGHT = rng.uniform(0.3, 1.0, N_PARTICLES) ** 2
 P_TWINKLE = rng.uniform(0, TAU, N_PARTICLES)
 P_HUE = rng.uniform(0, 1, N_PARTICLES)
@@ -152,6 +149,7 @@ def render(f):
     t = f / FPS
     wire = np.zeros((H * W, 3), np.float32)
     dots = np.zeros((H * W, 3), np.float32)
+    mid = np.zeros((H * W, 3), np.float32)
     soft = np.zeros((H * W, 3), np.float32)
 
     cam = camera(t)
@@ -166,7 +164,9 @@ def render(f):
     ds = np.concatenate([ds, ds[:, -1:]], 1)
     ok = (depth > NEAR) & (ds < 40)
     fade = np.clip(1.6 / (0.25 + depth), 0, 3.0)  # nearer wires glow harder
-    inten = (0.9 * ds * fade)[ok]
+    band = (p @ WAVE_DIR) - (-1.3 + 2.6 * t / DURATION)
+    wave = 0.8 + 1.4 * np.exp(-0.5 * (band / 0.16) ** 2)
+    inten = (0.9 * ds * fade * wave * WIRE_POLE_FADE)[ok]
     splat(wire, x[ok], y[ok], inten[:, None] * WIRE_COL[None])
 
     # Particles
@@ -177,13 +177,19 @@ def render(f):
     twinkle = 0.65 + 0.35 * np.sin(TAU * 2 * t / DURATION + P_TWINKLE)
     col = PART_COL_A[None] * (1 - P_HUE[:, None]) + PART_COL_B[None] * P_HUE[:, None]
     v = (P_BRIGHT * twinkle * np.clip(0.9 / depth, 0.4, 6.0))[:, None] * col
-    near = depth < 0.45  # particles close to the lens become soft bokeh
-    splat(dots, x[ok & ~near], y[ok & ~near], v[ok & ~near] * 16.0)
-    splat(soft, x[ok & near], y[ok & near], v[ok & near] * 75.0)
+    # Focus slowly breathes from near to far, so particles drift in and out of sharpness
+    focus = 0.8 - 0.4 * np.cos(np.pi * t / DURATION)
+    coc = np.abs(1 / np.maximum(depth, NEAR) - 1 / focus)
+    sharp_m, mid_m = ok & (coc < 0.45), ok & (coc >= 0.45) & (coc < 1.4)
+    soft_m = ok & (coc >= 1.4)
+    splat(dots, x[sharp_m], y[sharp_m], v[sharp_m] * 16.0)
+    splat(mid, x[mid_m], y[mid_m], v[mid_m] * 32.0)
+    splat(soft, x[soft_m], y[soft_m], v[soft_m] * 75.0)
 
     wire = wire.reshape(H, W, 3)
-    # Particles are drawn as small discs (blurred at full res) and large bokeh, twice the old size
-    part = blur(dots.reshape(H, W, 3), 1.4, 1) + blur(soft.reshape(H, W, 3), 6.0, 2)
+    # Particles: small discs in focus, softer discs slightly out, large bokeh far out of focus
+    part = (blur(dots.reshape(H, W, 3), 1.4, 1) + blur(mid.reshape(H, W, 3), 2.0, 2)
+            + blur(soft.reshape(H, W, 3), 6.0, 2))
     sharp = wire + part
     img = sharp + blur(sharp, 2, 2) * 3.2 + blur(sharp, 5, 4) * 3.0 + blur(sharp, 20, 4) * 1.0
     img = BG + img
