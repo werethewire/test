@@ -1,4 +1,4 @@
-"""Render a 10s weightless video from inside a tumbling geodesic wireframe sphere with drifting particles.
+"""Render a 10s weightless video from inside a tumbling quad-grid wireframe sphere with drifting particles.
 
 Usage: python3 render_wireframe_sphere.py [output.mp4]
 Requires numpy, Pillow and ffmpeg on PATH.
@@ -19,9 +19,9 @@ OUT = sys.argv[1] if len(sys.argv) > 1 else "wireframe_sphere_particles.mp4"
 CAM = np.array([0.0, 0.0, 0.32])
 FOCAL = (W / 2) / np.tan(np.radians(52))
 NEAR = 0.04
-GEO_FREQ = 4  # geodesic subdivision: uniform triangles, no poles -> no visual centre
-ARC_SAMPLES = 260
-N_PARTICLES = 7000
+GRID_DIV = 5  # quads per cube-face edge; a cube-sphere grid has no poles -> no visual centre
+ARC_SAMPLES = 1600
+N_PARTICLES = 1750
 # Two rotations on unrelated oblique axes -> the effective spin axis keeps wandering (tumbling)
 TUMBLE = [(np.array([0.8, 0.5, 0.3]), np.radians(34)), (np.array([-0.3, 0.6, -0.75]), np.radians(22))]
 
@@ -30,30 +30,23 @@ TAU = 2 * np.pi
 
 
 def build_wireframe():
-    """Geodesic sphere edges as great-circle arcs: (edges, ARC_SAMPLES, 3)."""
-    g = (1 + 5 ** 0.5) / 2
-    v = np.array([[-1, g, 0], [1, g, 0], [-1, -g, 0], [1, -g, 0], [0, -1, g], [0, 1, g],
-                  [0, -1, -g], [0, 1, -g], [g, 0, -1], [g, 0, 1], [-g, 0, -1], [-g, 0, 1]], float)
-    faces = [(0, 11, 5), (0, 5, 1), (0, 1, 7), (0, 7, 10), (0, 10, 11), (1, 5, 9), (5, 11, 4), (11, 10, 2),
-             (10, 7, 6), (7, 1, 8), (3, 9, 4), (3, 4, 2), (3, 2, 6), (3, 6, 8), (3, 8, 9), (4, 9, 5),
-             (2, 4, 11), (6, 2, 10), (8, 6, 7), (9, 8, 1)]
-    n = GEO_FREQ
-    edges = set()
-    for a, b, c in faces:
-        A, B, C = v[a], v[b], v[c]
-        grid = {}
-        for i in range(n + 1):
-            for j in range(n + 1 - i):
-                p = A + (B - A) * i / n + (C - A) * j / n
-                grid[i, j] = tuple(np.round(p / np.linalg.norm(p), 9))
-        for i in range(n + 1):
-            for j in range(n + 1 - i):
-                for di, dj in ((1, 0), (0, 1), (1, -1)):
-                    k = (i + di, j + dj)
-                    if k in grid:
-                        edges.add(tuple(sorted((grid[i, j], grid[k]))))
-    p0 = np.array([e[0] for e in edges])
-    p1 = np.array([e[1] for e in edges])
+    """Equal-angle cube-sphere grid lines as great-circle arcs: (arcs, ARC_SAMPLES, 3)."""
+    ends = np.tan(np.linspace(-np.pi / 4, np.pi / 4, GRID_DIV + 1))
+    arcs = set()
+    for axis in range(3):
+        for sign in (-1, 1):
+            for k in ends:
+                for swap in (False, True):
+                    # On face (axis, sign), a line of constant tangent coordinate k spans edge to edge
+                    a, b = np.zeros(3), np.zeros(3)
+                    o1, o2 = [i for i in range(3) if i != axis][:: -1 if swap else 1]
+                    a[axis] = b[axis] = sign
+                    a[o1] = b[o1] = k
+                    a[o2], b[o2] = -1, 1
+                    a, b = a / np.linalg.norm(a), b / np.linalg.norm(b)
+                    arcs.add(tuple(sorted((tuple(np.round(a, 9)), tuple(np.round(b, 9))))))
+    p0 = np.array([e[0] for e in arcs])
+    p1 = np.array([e[1] for e in arcs])
     om = np.arccos(np.clip((p0 * p1).sum(1), -1, 1))[:, None, None]
     tt = np.linspace(0, 1, ARC_SAMPLES)[None, :, None]
     return (np.sin((1 - tt) * om) * p0[:, None] + np.sin(tt * om) * p1[:, None]) / np.sin(om)
