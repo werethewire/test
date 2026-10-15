@@ -10,7 +10,7 @@ SCALE = 100.0  # paper mm -> real mm
 
 LAYERS = {  # name: ACI colour
     "A-WALL": 7, "A-GLASS": 1, "A-COLS": 8, "A-FURN": 4, "A-WOOD": 30, "A-PLANT": 3,
-    "A-CEIL": 9, "A-DIMS": 2, "A-TEXT": 7, "A-FILL": 254, "A-FRAME": 7,
+    "A-CEIL": 9, "A-DIMS": 2, "A-TEXT": 7, "A-FILL": 254, "A-GRID": 9, "A-FRAME": 7,
 }
 CMAP = {"#c8102e": "A-GLASS", "#3c6e27": "A-PLANT", "#8a5a2b": "A-WOOD",
         "#7fb069": "A-PLANT", "#cfe3c4": "A-PLANT", "#93c47d": "A-PLANT", "#a9d18e": "A-PLANT",
@@ -23,6 +23,8 @@ def _hex(c):
 def _layer(art, colour):
     z = art.get_zorder()
     ls = getattr(art, "get_linestyle", lambda: "-")()
+    if isinstance(art, Line2D) and z == 0:
+        return "A-GRID"
     if z >= 10 and z < 11 and not isinstance(art, Text):
         return "A-FRAME"
     if z >= 9 and z < 10:
