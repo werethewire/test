@@ -1,4 +1,4 @@
-"""Render a 10s video from inside a slowly, diagonally rotating wireframe sphere with drifting particles.
+"""Render a 10s weightless video from inside a tumbling geodesic wireframe sphere with drifting particles.
 
 Usage: python3 render_wireframe_sphere.py [output.mp4]
 Requires numpy, Pillow and ffmpeg on PATH.
@@ -15,33 +15,48 @@ DURATION = 10
 FRAMES = FPS * DURATION
 OUT = sys.argv[1] if len(sys.argv) > 1 else "wireframe_sphere_particles.mp4"
 
-# Camera sits inside the unit sphere, slightly off-centre, looking down -z with a wide lens
-CAM = np.array([0.0, 0.0, 0.35])
+# Camera floats inside the unit sphere, slightly off-centre, looking down -z with a wide lens
+CAM = np.array([0.0, 0.0, 0.32])
 FOCAL = (W / 2) / np.tan(np.radians(52))
 NEAR = 0.04
-LAT_LINES = 17
-MERIDIANS = 18  # full great circles through the poles -> 36 meridians
-SEG = 9000
+GEO_FREQ = 6  # geodesic subdivision: uniform triangles, no poles -> no visual centre
+ARC_SAMPLES = 260
 N_PARTICLES = 7000
-ROT_AXIS = np.array([1.0, 0.85, 0.35]) / np.linalg.norm([1.0, 0.85, 0.35])
-ROT_TOTAL = np.radians(40)  # wireframe rotation over the whole clip
+# Two rotations on unrelated oblique axes -> the effective spin axis keeps wandering (tumbling)
+TUMBLE = [(np.array([0.8, 0.5, 0.3]), np.radians(34)), (np.array([-0.3, 0.6, -0.75]), np.radians(22))]
 
 rng = np.random.default_rng(11)
 TAU = 2 * np.pi
 
 
 def build_wireframe():
-    """Return (lines, SEG, 3): every line is a closed circle sampled SEG times."""
-    th = np.linspace(0, TAU, SEG, endpoint=False)
-    lines = []
-    for i in range(1, LAT_LINES + 1):
-        phi = -np.pi / 2 + np.pi * i / (LAT_LINES + 1)
-        r, y = np.cos(phi), np.sin(phi)
-        lines.append(np.stack([r * np.cos(th), np.full_like(th, y), r * np.sin(th)], 1))
-    for j in range(MERIDIANS):
-        a = np.pi * j / MERIDIANS
-        lines.append(np.stack([np.cos(th) * np.cos(a), np.sin(th), np.cos(th) * np.sin(a)], 1))
-    return np.stack(lines)
+    """Geodesic sphere edges as great-circle arcs: (edges, ARC_SAMPLES, 3)."""
+    g = (1 + 5 ** 0.5) / 2
+    v = np.array([[-1, g, 0], [1, g, 0], [-1, -g, 0], [1, -g, 0], [0, -1, g], [0, 1, g],
+                  [0, -1, -g], [0, 1, -g], [g, 0, -1], [g, 0, 1], [-g, 0, -1], [-g, 0, 1]], float)
+    faces = [(0, 11, 5), (0, 5, 1), (0, 1, 7), (0, 7, 10), (0, 10, 11), (1, 5, 9), (5, 11, 4), (11, 10, 2),
+             (10, 7, 6), (7, 1, 8), (3, 9, 4), (3, 4, 2), (3, 2, 6), (3, 6, 8), (3, 8, 9), (4, 9, 5),
+             (2, 4, 11), (6, 2, 10), (8, 6, 7), (9, 8, 1)]
+    n = GEO_FREQ
+    edges = set()
+    for a, b, c in faces:
+        A, B, C = v[a], v[b], v[c]
+        grid = {}
+        for i in range(n + 1):
+            for j in range(n + 1 - i):
+                p = A + (B - A) * i / n + (C - A) * j / n
+                grid[i, j] = tuple(np.round(p / np.linalg.norm(p), 9))
+        for i in range(n + 1):
+            for j in range(n + 1 - i):
+                for di, dj in ((1, 0), (0, 1), (1, -1)):
+                    k = (i + di, j + dj)
+                    if k in grid:
+                        edges.add(tuple(sorted((grid[i, j], grid[k]))))
+    p0 = np.array([e[0] for e in edges])
+    p1 = np.array([e[1] for e in edges])
+    om = np.arccos(np.clip((p0 * p1).sum(1), -1, 1))[:, None, None]
+    tt = np.linspace(0, 1, ARC_SAMPLES)[None, :, None]
+    return (np.sin((1 - tt) * om) * p0[:, None] + np.sin(tt * om) * p1[:, None]) / np.sin(om)
 
 
 WIRE = build_wireframe()
@@ -53,7 +68,7 @@ P_BASE = u * (rng.uniform(0, 1, N_PARTICLES) ** (1 / 3) * 0.92)[:, None]
 P_AMP = rng.uniform(0.03, 0.16, (N_PARTICLES, 3))
 P_FREQ = rng.integers(1, 3, (N_PARTICLES, 3)) * TAU / DURATION
 P_PHASE = rng.uniform(0, TAU, (N_PARTICLES, 3))
-P_ORBIT = rng.choice([-1, 1], N_PARTICLES) * rng.uniform(0.3, 1.0, N_PARTICLES) * np.radians(30) / DURATION
+P_VEL = rng.normal(size=(N_PARTICLES, 3)) * 0.022  # slow straight drift in every direction
 P_BRIGHT = rng.uniform(0.3, 1.0, N_PARTICLES) ** 2
 P_TWINKLE = rng.uniform(0, TAU, N_PARTICLES)
 P_HUE = rng.uniform(0, 1, N_PARTICLES)
@@ -65,8 +80,8 @@ PART_COL_B = np.array([1.00, 0.38, 0.05])  # deep orange
 # Background: near-black with a faint warm core for high contrast
 yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
 d = np.sqrt(((xx - W / 2) / W) ** 2 + ((yy - H / 2) / W) ** 2)
-BG = np.stack([0.012 * np.exp(-d * 3), 0.005 * np.exp(-d * 3), 0.001 * np.exp(-d * 3)], -1)
-VIGNETTE = np.clip(1.25 - d * 1.2, 0, 1)[..., None] ** 1.5
+BG = np.array([0.008, 0.003, 0.0006], np.float32)  # flat: no glowing core pulling the eye to the middle
+VIGNETTE = np.clip(1.3 - d * 0.9, 0, 1)[..., None]
 
 
 def rot_axis(axis, a):
@@ -78,8 +93,19 @@ def rot_axis(axis, a):
                      [z * x * C - y * s, z * y * C + x * s, c + z * z * C]])
 
 
-def project(p):
-    rel = p - CAM
+def camera(t):
+    """Floating camera: small drifting position plus slow yaw/pitch/roll sway."""
+    u = TAU * t / DURATION
+    pos = CAM + np.array([0.07 * np.sin(u + 0.4), 0.05 * np.sin(u * 0.5 + 1.3), 0.04 * np.sin(u + 2.1)])
+    rot = rot_axis(np.array([0, 0, 1.0]), np.radians(12) * np.sin(u * 0.5 + 0.3)) \
+        @ rot_axis(np.array([0, 1.0, 0]), np.radians(5) * np.sin(u + 1.0)) \
+        @ rot_axis(np.array([1.0, 0, 0]), np.radians(4) * np.sin(u * 0.5 + 2.2))
+    return pos, rot
+
+
+def project(p, cam):
+    pos, rot = cam
+    rel = (p - pos) @ rot
     depth = -rel[..., 2]
     safe = np.maximum(depth, NEAR)
     x = W / 2 + FOCAL * rel[..., 0] / safe
@@ -130,22 +156,24 @@ def render(f):
     sharp = np.zeros((H * W, 3), np.float32)
     soft = np.zeros((H * W, 3), np.float32)
 
-    # Wireframe: diagonal-axis rotation; intensity follows on-screen segment length so lines stay even
-    R = rot_axis(ROT_AXIS, ROT_TOTAL * t / DURATION + 0.6)
+    cam = camera(t)
+
+    # Wireframe: tumbling rotation; intensity follows on-screen segment length so lines stay even
+    R = np.eye(3)
+    for axis, total in TUMBLE:
+        R = rot_axis(axis / np.linalg.norm(axis), total * t / DURATION + 0.5) @ R
     p = WIRE @ R.T
-    x, y, depth = project(p)
-    ds = np.hypot(np.roll(x, -1, 1) - x, np.roll(y, -1, 1) - y)
-    ok = (depth > NEAR) & (np.roll(depth, -1, 1) > NEAR) & (ds < 40)
+    x, y, depth = project(p, cam)
+    ds = np.hypot(np.diff(x, axis=1), np.diff(y, axis=1))
+    ds = np.concatenate([ds, ds[:, -1:]], 1)
+    ok = (depth > NEAR) & (ds < 40)
     fade = np.clip(1.6 / (0.25 + depth), 0, 3.0)  # nearer wires glow harder
-    inten = (1.0 * ds * fade)[ok]
+    inten = (0.75 * ds * fade)[ok]
     splat(sharp, x[ok], y[ok], inten[:, None] * WIRE_COL[None])
 
     # Particles
-    q = P_BASE + P_AMP * np.sin(P_FREQ * t + P_PHASE)
-    ang = P_ORBIT * t
-    c, s = np.cos(ang), np.sin(ang)
-    q = np.stack([c * q[:, 0] + s * q[:, 2], q[:, 1], -s * q[:, 0] + c * q[:, 2]], 1)
-    x, y, depth = project(q)
+    q = P_BASE + P_VEL * (t - DURATION / 2) + P_AMP * np.sin(P_FREQ * t + P_PHASE)
+    x, y, depth = project(q, cam)
     ok = depth > NEAR
     twinkle = 0.65 + 0.35 * np.sin(TAU * 2 * t / DURATION + P_TWINKLE)
     col = PART_COL_A[None] * (1 - P_HUE[:, None]) + PART_COL_B[None] * P_HUE[:, None]
@@ -157,7 +185,7 @@ def render(f):
     sharp = sharp.reshape(H, W, 3)
     soft = soft.reshape(H, W, 3)
     img = (sharp + blur(soft, 3.0, 2)
-           + blur(sharp, 2, 2) * 3.0 + blur(sharp, 6, 4) * 4.0 + blur(sharp, 20, 4) * 3.5)
+           + blur(sharp, 2, 2) * 3.2 + blur(sharp, 5, 4) * 3.0 + blur(sharp, 20, 4) * 1.0)
     img = BG + img
     img = 1 - np.exp(-img * 1.8)  # tonemap: hot cores roll off toward white-gold
     img = img * VIGNETTE
