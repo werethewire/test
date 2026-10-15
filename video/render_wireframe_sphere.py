@@ -19,7 +19,7 @@ OUT = sys.argv[1] if len(sys.argv) > 1 else "wireframe_sphere_particles.mp4"
 CAM = np.array([0.0, 0.0, 0.32])
 FOCAL = (W / 2) / np.tan(np.radians(52))
 NEAR = 0.04
-GEO_FREQ = 6  # geodesic subdivision: uniform triangles, no poles -> no visual centre
+GEO_FREQ = 4  # geodesic subdivision: uniform triangles, no poles -> no visual centre
 ARC_SAMPLES = 260
 N_PARTICLES = 7000
 # Two rotations on unrelated oblique axes -> the effective spin axis keeps wandering (tumbling)
@@ -65,17 +65,21 @@ WIRE = build_wireframe()
 u = rng.normal(size=(N_PARTICLES, 3))
 u /= np.linalg.norm(u, axis=1, keepdims=True)
 P_BASE = u * (rng.uniform(0, 1, N_PARTICLES) ** (1 / 3) * 0.92)[:, None]
+# Two slow, incommensurate sway components per axis give an organic, buoyant float
 P_AMP = rng.uniform(0.03, 0.16, (N_PARTICLES, 3))
-P_FREQ = rng.integers(1, 3, (N_PARTICLES, 3)) * TAU / DURATION
+P_FREQ = rng.uniform(0.5, 1.0, (N_PARTICLES, 3)) * TAU / DURATION
+P_AMP2 = rng.uniform(0.01, 0.06, (N_PARTICLES, 3))
+P_FREQ2 = rng.uniform(1.0, 1.6, (N_PARTICLES, 3)) * TAU / DURATION
+P_PHASE2 = rng.uniform(0, TAU, (N_PARTICLES, 3))
 P_PHASE = rng.uniform(0, TAU, (N_PARTICLES, 3))
-P_VEL = rng.normal(size=(N_PARTICLES, 3)) * 0.022  # slow straight drift in every direction
+P_VEL = rng.normal(size=(N_PARTICLES, 3)) * 0.011  # slow straight drift in every direction
 P_BRIGHT = rng.uniform(0.3, 1.0, N_PARTICLES) ** 2
 P_TWINKLE = rng.uniform(0, TAU, N_PARTICLES)
 P_HUE = rng.uniform(0, 1, N_PARTICLES)
 
-WIRE_COL = np.array([1.00, 0.55, 0.10])
-PART_COL_A = np.array([1.00, 0.82, 0.35])  # golden yellow
-PART_COL_B = np.array([1.00, 0.38, 0.05])  # deep orange
+WIRE_COL = np.array([0.62, 0.80, 1.00])  # blue-tinted white
+PART_COL_A = np.array([1.00, 0.92, 0.25])  # bright yellow
+PART_COL_B = np.array([1.00, 0.70, 0.06])  # amber yellow
 
 # Background: near-black with a faint warm core for high contrast
 yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
@@ -153,7 +157,8 @@ def blur(img, sigma, scale):
 
 def render(f):
     t = f / FPS
-    sharp = np.zeros((H * W, 3), np.float32)
+    wire = np.zeros((H * W, 3), np.float32)
+    dots = np.zeros((H * W, 3), np.float32)
     soft = np.zeros((H * W, 3), np.float32)
 
     cam = camera(t)
@@ -168,24 +173,26 @@ def render(f):
     ds = np.concatenate([ds, ds[:, -1:]], 1)
     ok = (depth > NEAR) & (ds < 40)
     fade = np.clip(1.6 / (0.25 + depth), 0, 3.0)  # nearer wires glow harder
-    inten = (0.75 * ds * fade)[ok]
-    splat(sharp, x[ok], y[ok], inten[:, None] * WIRE_COL[None])
+    inten = (0.9 * ds * fade)[ok]
+    splat(wire, x[ok], y[ok], inten[:, None] * WIRE_COL[None])
 
     # Particles
-    q = P_BASE + P_VEL * (t - DURATION / 2) + P_AMP * np.sin(P_FREQ * t + P_PHASE)
+    q = (P_BASE + P_VEL * (t - DURATION / 2) + P_AMP * np.sin(P_FREQ * t + P_PHASE)
+         + P_AMP2 * np.sin(P_FREQ2 * t + P_PHASE2))
     x, y, depth = project(q, cam)
     ok = depth > NEAR
     twinkle = 0.65 + 0.35 * np.sin(TAU * 2 * t / DURATION + P_TWINKLE)
     col = PART_COL_A[None] * (1 - P_HUE[:, None]) + PART_COL_B[None] * P_HUE[:, None]
     v = (P_BRIGHT * twinkle * np.clip(0.9 / depth, 0.4, 6.0))[:, None] * col
     near = depth < 0.45  # particles close to the lens become soft bokeh
-    splat(sharp, x[ok & ~near], y[ok & ~near], v[ok & ~near] * 8.0)
-    splat(soft, x[ok & near], y[ok & near], v[ok & near] * 70.0)
+    splat(dots, x[ok & ~near], y[ok & ~near], v[ok & ~near] * 16.0)
+    splat(soft, x[ok & near], y[ok & near], v[ok & near] * 75.0)
 
-    sharp = sharp.reshape(H, W, 3)
-    soft = soft.reshape(H, W, 3)
-    img = (sharp + blur(soft, 3.0, 2)
-           + blur(sharp, 2, 2) * 3.2 + blur(sharp, 5, 4) * 3.0 + blur(sharp, 20, 4) * 1.0)
+    wire = wire.reshape(H, W, 3)
+    # Particles are drawn as small discs (blurred at full res) and large bokeh, twice the old size
+    part = blur(dots.reshape(H, W, 3), 1.4, 1) + blur(soft.reshape(H, W, 3), 6.0, 2)
+    sharp = wire + part
+    img = sharp + blur(sharp, 2, 2) * 3.2 + blur(sharp, 5, 4) * 3.0 + blur(sharp, 20, 4) * 1.0
     img = BG + img
     img = 1 - np.exp(-img * 1.8)  # tonemap: hot cores roll off toward white-gold
     img = img * VIGNETTE
