@@ -1,4 +1,4 @@
-"""Render a 10s video: a slowly rotating wireframe sphere with drifting particles.
+"""Render a 10s video from inside a slowly, diagonally rotating wireframe sphere with drifting particles.
 
 Usage: python3 render_wireframe_sphere.py [output.mp4]
 Requires numpy, Pillow and ffmpeg on PATH.
@@ -15,72 +15,76 @@ DURATION = 10
 FRAMES = FPS * DURATION
 OUT = sys.argv[1] if len(sys.argv) > 1 else "wireframe_sphere_particles.mp4"
 
-CAM_Z = 3.4
-FOCAL = 1.05 * H
-LAT_LINES = 11
-LON_LINES = 24  # 15deg spacing -> rotating 30deg over 10s loops seamlessly
-SEG = 2400
-N_PARTICLES = 2600
+# Camera sits inside the unit sphere, slightly off-centre, looking down -z with a wide lens
+CAM = np.array([0.0, 0.0, 0.35])
+FOCAL = (W / 2) / np.tan(np.radians(52))
+NEAR = 0.04
+LAT_LINES = 17
+MERIDIANS = 18  # full great circles through the poles -> 36 meridians
+SEG = 9000
+N_PARTICLES = 7000
+ROT_AXIS = np.array([1.0, 0.85, 0.35]) / np.linalg.norm([1.0, 0.85, 0.35])
+ROT_TOTAL = np.radians(40)  # wireframe rotation over the whole clip
 
-rng = np.random.default_rng(7)
+rng = np.random.default_rng(11)
 TAU = 2 * np.pi
 
 
 def build_wireframe():
-    pts = []
+    """Return (lines, SEG, 3): every line is a closed circle sampled SEG times."""
     th = np.linspace(0, TAU, SEG, endpoint=False)
+    lines = []
     for i in range(1, LAT_LINES + 1):
         phi = -np.pi / 2 + np.pi * i / (LAT_LINES + 1)
         r, y = np.cos(phi), np.sin(phi)
-        pts.append(np.stack([r * np.cos(th), np.full_like(th, y), r * np.sin(th)], 1))
-    ph = np.linspace(-np.pi / 2, np.pi / 2, SEG // 2)
-    for j in range(LON_LINES):
-        a = TAU * j / LON_LINES
-        pts.append(np.stack([np.cos(ph) * np.cos(a), np.sin(ph), np.cos(ph) * np.sin(a)], 1))
-    return np.concatenate(pts)
+        lines.append(np.stack([r * np.cos(th), np.full_like(th, y), r * np.sin(th)], 1))
+    for j in range(MERIDIANS):
+        a = np.pi * j / MERIDIANS
+        lines.append(np.stack([np.cos(th) * np.cos(a), np.sin(th), np.cos(th) * np.sin(a)], 1))
+    return np.stack(lines)
 
 
 WIRE = build_wireframe()
 
-# Particles: base position in a shell around/inside the sphere + periodic Lissajous drift
+# Particles fill the sphere volume and drift on slow periodic paths
 u = rng.normal(size=(N_PARTICLES, 3))
 u /= np.linalg.norm(u, axis=1, keepdims=True)
-rad = rng.uniform(0.15, 2.4, N_PARTICLES) ** 0.8
-P_BASE = u * rad[:, None]
-P_AMP = rng.uniform(0.08, 0.45, (N_PARTICLES, 3))
+P_BASE = u * (rng.uniform(0, 1, N_PARTICLES) ** (1 / 3) * 0.92)[:, None]
+P_AMP = rng.uniform(0.03, 0.16, (N_PARTICLES, 3))
 P_FREQ = rng.integers(1, 3, (N_PARTICLES, 3)) * TAU / DURATION
 P_PHASE = rng.uniform(0, TAU, (N_PARTICLES, 3))
-P_ORBIT = rng.choice([-1, 1], N_PARTICLES) * TAU / DURATION / 4  # quarter turn per loop
-P_BRIGHT = rng.uniform(0.35, 1.0, N_PARTICLES) ** 2
+P_ORBIT = rng.choice([-1, 1], N_PARTICLES) * rng.uniform(0.3, 1.0, N_PARTICLES) * np.radians(30) / DURATION
+P_BRIGHT = rng.uniform(0.3, 1.0, N_PARTICLES) ** 2
 P_TWINKLE = rng.uniform(0, TAU, N_PARTICLES)
 P_HUE = rng.uniform(0, 1, N_PARTICLES)
 
-WIRE_COL = np.array([0.30, 0.75, 1.00])
-PART_COL_A = np.array([0.55, 0.90, 1.00])
-PART_COL_B = np.array([1.00, 0.78, 0.55])
+WIRE_COL = np.array([1.00, 0.55, 0.10])
+PART_COL_A = np.array([1.00, 0.82, 0.35])  # golden yellow
+PART_COL_B = np.array([1.00, 0.38, 0.05])  # deep orange
 
-# Background: deep navy radial gradient
+# Background: near-black with a faint warm core for high contrast
 yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
 d = np.sqrt(((xx - W / 2) / W) ** 2 + ((yy - H / 2) / W) ** 2)
-BG = np.stack([0.010 + 0.025 * np.exp(-d * 4), 0.014 + 0.040 * np.exp(-d * 4), 0.030 + 0.070 * np.exp(-d * 3.5)], -1)
-VIGNETTE = np.clip(1.15 - d * 1.1, 0, 1)[..., None]
+BG = np.stack([0.012 * np.exp(-d * 3), 0.005 * np.exp(-d * 3), 0.001 * np.exp(-d * 3)], -1)
+VIGNETTE = np.clip(1.25 - d * 1.2, 0, 1)[..., None] ** 1.5
 
 
-def rot_y(a):
-    c, s = np.cos(a), np.sin(a)
-    return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
-
-
-def rot_x(a):
-    c, s = np.cos(a), np.sin(a)
-    return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
+def rot_axis(axis, a):
+    """Rodrigues rotation matrix."""
+    x, y, z = axis
+    c, s, C = np.cos(a), np.sin(a), 1 - np.cos(a)
+    return np.array([[c + x * x * C, x * y * C - z * s, x * z * C + y * s],
+                     [y * x * C + z * s, c + y * y * C, y * z * C - x * s],
+                     [z * x * C - y * s, z * y * C + x * s, c + z * z * C]])
 
 
 def project(p):
-    z = CAM_Z - p[:, 2]
-    x = W / 2 + FOCAL * p[:, 0] / z
-    y = H / 2 - FOCAL * p[:, 1] / z
-    return x, y, z
+    rel = p - CAM
+    depth = -rel[..., 2]
+    safe = np.maximum(depth, NEAR)
+    x = W / 2 + FOCAL * rel[..., 0] / safe
+    y = H / 2 - FOCAL * rel[..., 1] / safe
+    return x, y, depth
 
 
 def splat(buf, x, y, val):
@@ -126,37 +130,39 @@ def render(f):
     sharp = np.zeros((H * W, 3), np.float32)
     soft = np.zeros((H * W, 3), np.float32)
 
-    # Wireframe sphere: slow Y rotation (30deg / loop) with fixed tilt and gentle wobble
-    R = rot_x(0.38 + 0.05 * np.sin(TAU * t / DURATION)) @ rot_y(np.radians(30) * t / DURATION)
+    # Wireframe: diagonal-axis rotation; intensity follows on-screen segment length so lines stay even
+    R = rot_axis(ROT_AXIS, ROT_TOTAL * t / DURATION + 0.6)
     p = WIRE @ R.T
-    x, y, z = project(p)
-    front = np.clip((p[:, 2] + 1) / 2, 0, 1)  # 1 = facing camera
-    inten = (0.18 + 1.2 * front ** 1.6) * (260 / SEG)
-    splat(sharp, x, y, inten[:, None] * WIRE_COL[None])
+    x, y, depth = project(p)
+    ds = np.hypot(np.roll(x, -1, 1) - x, np.roll(y, -1, 1) - y)
+    ok = (depth > NEAR) & (np.roll(depth, -1, 1) > NEAR) & (ds < 40)
+    fade = np.clip(1.6 / (0.25 + depth), 0, 3.0)  # nearer wires glow harder
+    inten = (1.0 * ds * fade)[ok]
+    splat(sharp, x[ok], y[ok], inten[:, None] * WIRE_COL[None])
 
     # Particles
-    ang = P_ORBIT * t
     q = P_BASE + P_AMP * np.sin(P_FREQ * t + P_PHASE)
+    ang = P_ORBIT * t
     c, s = np.cos(ang), np.sin(ang)
     q = np.stack([c * q[:, 0] + s * q[:, 2], q[:, 1], -s * q[:, 0] + c * q[:, 2]], 1)
-    q = q @ rot_x(0.38).T
-    x, y, z = project(q)
-    ok = z > 0.6
-    twinkle = 0.7 + 0.3 * np.sin(TAU * 2 * t / DURATION + P_TWINKLE)
-    depth = np.clip((CAM_Z + 2.4 - z) / 4.8, 0.05, 1.0)
-    col = PART_COL_A[None] * (1 - P_HUE[:, None] ** 3) + PART_COL_B[None] * P_HUE[:, None] ** 3
-    v = (P_BRIGHT * twinkle * (0.25 + 0.75 * depth))[:, None] * col
-    near = z < 2.2  # close particles become soft bokeh dots
-    splat(sharp, x[ok & ~near], y[ok & ~near], v[ok & ~near] * 2.6)
-    splat(soft, x[ok & near], y[ok & near], v[ok & near] * 30.0)
+    x, y, depth = project(q)
+    ok = depth > NEAR
+    twinkle = 0.65 + 0.35 * np.sin(TAU * 2 * t / DURATION + P_TWINKLE)
+    col = PART_COL_A[None] * (1 - P_HUE[:, None]) + PART_COL_B[None] * P_HUE[:, None]
+    v = (P_BRIGHT * twinkle * np.clip(0.9 / depth, 0.4, 6.0))[:, None] * col
+    near = depth < 0.45  # particles close to the lens become soft bokeh
+    splat(sharp, x[ok & ~near], y[ok & ~near], v[ok & ~near] * 8.0)
+    splat(soft, x[ok & near], y[ok & near], v[ok & near] * 70.0)
 
     sharp = sharp.reshape(H, W, 3)
     soft = soft.reshape(H, W, 3)
-    img = sharp + blur(soft, 2.5, 2) + blur(sharp, 3, 4) * 1.6 + blur(sharp, 10, 4) * 1.8
+    img = (sharp + blur(soft, 3.0, 2)
+           + blur(sharp, 2, 2) * 3.0 + blur(sharp, 6, 4) * 4.0 + blur(sharp, 20, 4) * 3.5)
     img = BG + img
-    img = 1 - np.exp(-img * 1.6)  # tonemap
+    img = 1 - np.exp(-img * 1.8)  # tonemap: hot cores roll off toward white-gold
     img = img * VIGNETTE
-    img = np.clip(img ** (1 / 1.1) * 255 + rng.uniform(-1, 1, (H, W, 1)), 0, 255)  # dither
+    img = np.clip(img, 0, 1) ** 1.35  # deepen shadows for contrast
+    img = np.clip(img * 255 + rng.uniform(-0.8, 0.8, (H, W, 1)), 0, 255)  # dither
     return img.astype(np.uint8)
 
 
