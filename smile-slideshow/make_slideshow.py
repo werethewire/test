@@ -35,7 +35,19 @@ UA = "SmileSlideshow/1.0 (https://github.com/werethewire/test)"
 W, H, FPS = 1920, 1080, 30
 TOTAL = 30.0   # 秒
 XFADE = 0.5    # クロスフェード秒
-FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",   # Linux
+    "/System/Library/Fonts/Supplemental/Arial.ttf",      # macOS
+    "/Library/Fonts/Arial.ttf",
+    "C:/Windows/Fonts/arial.ttf",                        # Windows
+]
+
+
+def load_font(size):
+    for path in FONT_CANDIDATES:
+        if Path(path).exists():
+            return ImageFont.truetype(path, size)
+    return ImageFont.load_default(size)
 
 # 国・地域 / 年代 / 性別 / 動作（笑顔・応援・拍手）が偏らないように並べた検索語。
 # 1クエリにつき1枚採用し、上から順に並べる。
@@ -141,7 +153,7 @@ def contact_sheet():
     tw, th, cols = 480, 270, 4
     rows = (len(items) + cols - 1) // cols
     sheet = Image.new("RGB", (tw * cols, th * rows), "black")
-    font = ImageFont.truetype(FONT, 22)
+    font = load_font(22)
     for i, c in enumerate(items):
         im = ImageOps.fit(Image.open(RAW / c["file"]).convert("RGB"), (tw, th))
         ImageDraw.Draw(im).text((8, 8), f"{i:02d}", font=font, fill="white",
@@ -161,7 +173,7 @@ def render_caption(dest, caption):
     # ズームで切れないよう、クレジットはズーム後に重ねる透過レイヤーにする
     im = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
-    font = ImageFont.truetype(FONT, 24)
+    font = load_font(24)
     x0, y0, x1, y1 = d.textbbox((0, 0), caption, font=font)
     pad, margin = 10, 24
     bx, by = W - margin - pad - (x1 - x0), H - margin - pad - (y1 - y0)
